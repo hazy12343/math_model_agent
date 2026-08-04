@@ -1,0 +1,178 @@
+from pathlib import Path
+from typing import List, Optional
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+from langchain_core.tools import BaseTool, tool
+from src.config import AppConfig
+from src.agents.base import BaseAgent
+from src.tools.file_reader import FileReaderTool
+
+
+class CodingAgent(BaseAgent):
+    def __init__(self, config: AppConfig):
+        super().__init__(config, "编程手")
+        self.file_reader = FileReaderTool(config.skill_root)
+
+    def load_system_prompt(self) -> str:
+        parts = []
+
+        skill_content = self._load_role_skill("references/roles/编程手/SKILL.md")
+        parts.append(f"# 你的角色：编程手\n\n{skill_content}")
+
+        workflow = self._load_reference("references/roles/编程手/references/工作流程.md")
+        if workflow:
+            parts.append(f"\n\n# 工作流程\n\n{workflow}")
+
+        vis_spec = self._load_reference("references/roles/编程手/references/可视化规范.md")
+        if vis_spec:
+            parts.append(f"\n\n# 可视化规范\n\n{vis_spec}")
+
+        common_patterns = self._load_reference("references/roles/编程手/references/常见模式.md")
+        if common_patterns:
+            parts.append(f"\n\n# 常见模式\n\n{common_patterns}")
+
+        parts.append(f"""
+\n\n# 当前任务配置
+- 竞赛类型：{self.config.competition}
+- 语言：{self.config.language}
+- 项目根目录：{{project_root}}
+
+# 核心任务
+1. 读取题目分析报告和术语表格
+2. 选择 Python 或 MATLAB 实现
+3. 数据读取、预处理和核心求解
+4. 生成三类图（原始数据图、过程图、结果图），每类至少3张，合计至少9张
+5. 生成结果表格和复现清单
+
+# 重要规则
+- 所有结论必须来自真实代码输出，禁止编造
+- 先用小实例跑通，再全量计算
+- 图表必须使用出版级样式
+- 代码必须可复现
+""")
+        return "\n".join(parts)
+
+    def get_tools(self) -> List[BaseTool]:
+        return [
+            self.file_reader.read_pdf_tool,
+            self.file_reader.read_excel_tool,
+            self.file_reader.read_text_tool,
+            self._check_env_tool,
+        ]
+
+    @property
+    def _check_env_tool(self):
+        @tool
+        def check_environment(features: str) -> str:
+            """检查 Python 环境依赖。features 用逗号分隔，如 'data,visualization,optimization'"""
+            import subprocess
+            import sys
+            script = Path(self.config.skill_root) / "references/roles/编程手/scripts/check_env.py"
+            if not script.exists():
+                return "[环境检查脚本不存在]"
+            try:
+                result = subprocess.run(
+                    [sys.executable, str(script), "--features"] + features.split(","),
+                    capture_output=True, text=True, timeout=30
+                )
+                return result.stdout + "\n" + result.stderr
+            except Exception as e:
+                return f"[环境检查失败: {e}]"
+        return _check_env_tool
+
+    def implement_minimal(
+        self,
+        modeling_report: str,
+        terminology_table: str,
+        messages: List[BaseMessage],
+        project_root: str,
+    ) -> str:
+        prompt = self.load_system_prompt().replace("{project_root}", project_root)
+
+        user_msg = f"""请根据以下建模分析，实现最小可运行代码（P1阶段）：
+
+## 题目分析报告
+{modeling_report[:5000]}
+
+## 术语表格
+{terminology_table[:3000]}
+
+请完成：
+1. 数据读取和预处理代码（如有附件数据）
+2. 核心求解链的最小实现
+3. 用真实输入或结构等价小实例跑通
+4. 输出关键中间结果
+
+## 重要规则
+- 代码必须自包含，所有代码放在一个文件里
+- 不要跨文件 import 本项目其他模块
+- 参数使用硬编码常量或在代码中定义，不要依赖外部 JSON/CSV 文件
+- 如果题目没有附件数据，使用建模报告中的公式和参数构造示例数据
+- **使用英文或拼音命名文件（如 'result.csv'、'sensitivity.csv'），避免中文文件名**
+- **所有字符串字面量必须写在同一行内，禁止跨行字符串**
+- **确保代码是语法正确的 Python，可直接运行**
+- **代码块中只输出纯 Python 代码，禁止在代码块内混入 shell 命令（如 python xxx.py、pip install 等），shell 命令放在代码块外**
+- 使用 ```python 代码块包裹完整代码
+
+只输出代码和运行说明，不要生成完整图表。"""
+        return self.invoke(messages, user_input=user_msg)
+
+    def implement_full(
+        self,
+        modeling_report: str,
+        terminology_table: str,
+        messages: List[BaseMessage],
+        project_root: str,
+    ) -> str:
+        prompt = self.load_system_prompt().replace("{project_root}", project_root)
+
+        user_msg = f"""P1已通过，现在进行全量实现（P2阶段）：
+
+## 题目分析报告
+{modeling_report[:5000]}
+
+## 术语表格
+{terminology_table[:3000]}
+
+请完成：
+1. 全量计算和参数扫描（敏感性分析）
+2. 生成三类图（原始数据图、过程图、结果图），每类至少3张，合计至少9张
+3. 每个子问题在三类图中各至少1张
+4. 生成结果表格
+5. 生成复现清单
+
+## 重要规则
+
+### 代码必须自包含
+- 所有代码放在一个文件里，不要跨文件 import 本项目其他模块
+- 参数使用硬编码常量或在代码中定义，不要依赖外部 JSON/CSV 文件
+- 如果题目没有附件数据，使用建模报告中的公式和参数构造示例数据
+
+### 代码质量要求
+- **使用英文或拼音命名文件和目录（如 'figures/'、'results/'、'result.csv'），禁止中文文件名**
+- **所有字符串字面量必须写在同一行内，禁止跨行字符串**
+- **确保代码是语法正确的 Python，可直接运行**
+- **代码块中只输出纯 Python 代码，禁止在代码块内混入 shell 命令（如 python xxx.py、pip install 等），shell 命令放在代码块外**
+
+### 输出格式
+- 使用 ```python 代码块包裹完整代码
+- 代码块后附上运行说明
+- 图表保存到 figures/ 目录
+- 结果保存到 results/ 目录
+
+请输出完整代码和所有结果。"""
+        return self.invoke(messages, user_input=user_msg)
+
+    def fix_code(
+        self,
+        feedback: str,
+        messages: List[BaseMessage],
+        project_root: str,
+    ) -> str:
+        prompt = self.load_system_prompt().replace("{project_root}", project_root)
+        user_msg = f"""质检反馈了以下问题，请修正代码：
+
+## 反馈
+{feedback}
+
+请修正代码并重新输出。"""
+        return self.invoke(messages, user_input=user_msg)

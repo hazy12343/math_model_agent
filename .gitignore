@@ -5,3 +5,5 @@ __pycache__/
 projects/
 .DS_Store
 *.log
+test_output.txt
+projects/test_output/

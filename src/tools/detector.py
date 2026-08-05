@@ -92,25 +92,27 @@ class TrapDetector:
             pass
 
     def _check_missing_values(self, content: str, findings: List[str]):
-        """检查缺失值"""
         missing_indicators = ["NA", "N/A", "null", "NULL", "None", "NaN", "nan", "", "-", "--"]
-        lines = content.strip().split("\n")
-        if len(lines) < 2:
-            return
+        try:
+            reader = csv.reader(io.StringIO(content))
+            rows = list(reader)
+            if len(rows) < 2:
+                return
 
-        missing_count = 0
-        for line in lines[1:]:
-            cols = line.split(",")
-            for col in cols:
-                val = col.strip().strip('"').strip()
-                if val in missing_indicators:
-                    missing_count += 1
+            missing_count = 0
+            for row in rows[1:]:
+                for val in row:
+                    clean = val.strip().strip('"').strip()
+                    if clean in missing_indicators:
+                        missing_count += 1
 
-        if missing_count > 0:
-            findings.append(
-                f"P1-缺失值: 数据中包含 {missing_count} 个缺失值，"
-                f"需要明确处理策略（插值/删除/标记）"
-            )
+            if missing_count > 0:
+                findings.append(
+                    f"P1-缺失值: 数据中包含 {missing_count} 个缺失值，"
+                    f"需要明确处理策略（插值/删除/标记）"
+                )
+        except Exception:
+            pass
 
     def _check_implicit_constraints(self, problem: str, findings: List[str]):
         """检查隐式约束"""

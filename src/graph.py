@@ -447,7 +447,7 @@ def _ensure_main_block(code: str) -> str:
 
 
 def _inject_chinese_font(code: str) -> str:
-    if "font.sans-serif" in code or "SimHei" in code or "Microsoft YaHei" in code or "rcParams['font" in code:
+    if "font.sans-serif" in code or "SimHei" in code or "Microsoft YaHei" in code or "rcParams['font.sans-serif']" in code or "rcParams['font.sans-serif" in code:
         return code
 
     _CJK_RANGES = [

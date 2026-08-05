@@ -21,6 +21,8 @@ class NumericalVerifier:
         var_info = {}
         for name, info in variables.items():
             dims = self._infer_dimensions(info)
+            if not dims.get("unit"):
+                dims = self._infer_dimensions_from_name(name)
             var_info[name] = dims
 
         for name, info in var_info.items():
@@ -30,6 +32,8 @@ class NumericalVerifier:
                         f"P0-量纲错误: 变量 '{name}' 单位 '{info['unit']}' "
                         f"与预期 '{info['expected_unit']}' 不一致"
                     )
+            elif info.get("unit"):
+                findings.append(f"PASS: 变量 '{name}' 量纲检查通过 ({info['unit']})")
 
         status = "PASS" if not any("P0" in f for f in findings) else "FAIL"
         return {"status": status, "findings": findings, "variables": var_info}
@@ -65,39 +69,64 @@ class NumericalVerifier:
         return variables
 
     def _get_assignment_context(self, node) -> Dict:
-        """获取赋值语句的上下文信息"""
         ctx = {}
         try:
             if isinstance(node, ast.Assign) and node.value:
                 if isinstance(node.value, ast.Constant):
-                    ctx["raw_value"] = repr(node.value.value)
-                elif isinstance(node.value, ast.Num):
+                    ctx["raw_value"] = str(node.value.value)
+                elif isinstance(node.value, (ast.Num,)):
                     ctx["raw_value"] = str(node.value.n)
         except Exception:
             pass
         return ctx
 
     def _infer_dimensions(self, info: Dict) -> Dict:
-        """推断变量的量纲"""
         result = {}
         raw = info.get("raw_value", "")
 
-        if "m/s" in raw.lower() or "速度" in raw or "speed" in raw.lower() or "velocity" in raw.lower():
+        if "m/s" in raw.lower():
             result["unit"] = "m/s"
             result["expected_unit"] = "m/s"
-        elif "m^2" in raw.lower() or "面积" in raw or "area" in raw.lower():
+        elif "m^2" in raw.lower():
             result["unit"] = "m^2"
             result["expected_unit"] = "m^2"
-        elif "m" in raw.lower() or "距离" in raw or "distance" in raw.lower() or "length" in raw.lower():
+        elif raw.endswith("m") and not any(c in raw for c in ("cm", "km", "mm")):
             result["unit"] = "m"
             result["expected_unit"] = "m"
-        elif "s" in raw.lower() or "时间" in raw or "time" in raw.lower() or "duration" in raw.lower():
+        elif raw.endswith("s") and not raw.endswith("ms"):
             result["unit"] = "s"
             result["expected_unit"] = "s"
-        elif "kg" in raw.lower() or "质量" in raw or "mass" in raw.lower():
+        elif raw.endswith("kg"):
             result["unit"] = "kg"
             result["expected_unit"] = "kg"
-        elif "rad" in raw.lower() or "角度" in raw or "angle" in raw.lower():
+        elif raw.endswith("rad"):
+            result["unit"] = "rad"
+            result["expected_unit"] = "rad"
+
+        return result
+
+    def _infer_dimensions_from_name(self, name: str) -> Dict:
+        result = {}
+        name_lower = name.lower()
+
+        if any(kw in name_lower for kw in ("speed", "velocity", "速度", "速率", "vx", "vy", "vz")):
+            result["unit"] = "m/s"
+            result["expected_unit"] = "m/s"
+        elif any(kw in name_lower for kw in ("area", "面积", "区域")):
+            result["unit"] = "m^2"
+            result["expected_unit"] = "m^2"
+        elif any(kw in name_lower for kw in ("distance", "length", "width", "height", "depth",
+                                                "距离", "长度", "宽度", "高度", "深度",
+                                                "x", "y", "z", "pos", "position", "radius", "r")):
+            result["unit"] = "m"
+            result["expected_unit"] = "m"
+        elif any(kw in name_lower for kw in ("time", "duration", "时间", "时长", "period", "t", "dt")):
+            result["unit"] = "s"
+            result["expected_unit"] = "s"
+        elif any(kw in name_lower for kw in ("mass", "质量", "weight", "重量", "m_")):
+            result["unit"] = "kg"
+            result["expected_unit"] = "kg"
+        elif any(kw in name_lower for kw in ("angle", "角度", "theta", "alpha", "beta", "gamma", "phi")):
             result["unit"] = "rad"
             result["expected_unit"] = "rad"
 
@@ -146,12 +175,19 @@ class NumericalVerifier:
         return constraints
 
     def _check_constraint(self, constraint: Dict, results: str) -> Dict:
-        """检查单个约束"""
         value = constraint.get("value", "")
         name = constraint.get("name", "")
+        unit = constraint.get("unit", "")
         if value and name:
+
+            escaped_value = re.escape(value)
+            pattern = re.compile(
+                rf'{re.escape(name)}\s*[=＝:：]?\s*{escaped_value}\s*{re.escape(unit)}'
+                if unit else
+                rf'{re.escape(name)}.*?{escaped_value}'
+            )
             for line in results.split("\n"):
-                if name in line and value in line:
+                if pattern.search(line):
                     return {"status": "PASS", "evidence": line.strip()}
         return {"status": "FAIL", "evidence": ""}
 
@@ -178,7 +214,11 @@ class NumericalVerifier:
         except ValueError:
             pass
 
-        nan_count = sum(1 for v in values_in_results if v.lower() in ("nan", "inf", "-inf", "none"))
+        nan_count = 0
+        nan_keywords = ["nan", "inf", "-inf", "infinity", "-infinity", "none", "null"]
+        results_lower = results.lower()
+        for kw in nan_keywords:
+            nan_count += results_lower.count(kw)
         if nan_count > 0:
             findings.append(f"P0-数值异常: 结果中包含 {nan_count} 个 NaN/Inf/None 值")
 

@@ -1,4 +1,6 @@
 import re
+import csv
+import io
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 
@@ -14,8 +16,9 @@ class TrapDetector:
         findings = []
 
         if attachment_content:
-            self._check_csv_anomalies(attachment_content, findings)
-            self._check_missing_values(attachment_content, findings)
+            if self._looks_like_csv(attachment_content):
+                self._check_csv_anomalies(attachment_content, findings)
+                self._check_missing_values(attachment_content, findings)
 
         self._check_implicit_constraints(problem_description, findings)
         self._check_dimensional_traps(problem_description, findings)
@@ -30,40 +33,63 @@ class TrapDetector:
             "anomaly_count": len([f for f in findings if "P0" in f or "P1" in f]),
         }
 
+    def _looks_like_csv(self, content: str) -> bool:
+        lines = content.strip().split("\n")
+        if len(lines) < 2:
+            return False
+        first_line = lines[0]
+        comma_count = first_line.count(",")
+        tab_count = first_line.count("\t")
+        if comma_count >= 1 or tab_count >= 1:
+            for line in lines[1:5]:
+                if line.strip():
+                    if comma_count >= 1:
+                        if line.count(",") != comma_count:
+                            return False
+                    if tab_count >= 1:
+                        if line.count("\t") != tab_count:
+                            return False
+            return True
+        return False
+
     def _check_csv_anomalies(self, content: str, findings: List[str]):
-        """检查CSV数据异常"""
         lines = content.strip().split("\n")
         if len(lines) < 2:
             return
 
-        header = lines[0]
-        data_lines = lines[1:]
-        num_cols = len(header.split(","))
+        try:
+            reader = csv.reader(io.StringIO(content))
+            rows = list(reader)
+            if len(rows) < 2:
+                return
+            header = rows[0]
+            data_rows = rows[1:]
+            num_cols = len(header)
 
-        for i, line in enumerate(data_lines):
-            cols = line.split(",")
-            if len(cols) != num_cols:
-                findings.append(
-                    f"P1-数据异常: 第{i+2}行列数({len(cols)})与表头({num_cols})不一致"
-                )
-
-        for j in range(num_cols):
-            col_values = []
-            for line in data_lines:
-                cols = line.split(",")
-                if j < len(cols):
-                    val = cols[j].strip().strip('"')
-                    try:
-                        col_values.append(float(val))
-                    except ValueError:
-                        pass
-
-            if col_values:
-                if len(set(col_values)) == 1 and len(col_values) > 2:
-                    col_name = header.split(",")[j].strip() if j < len(header.split(",")) else f"列{j+1}"
+            for i, row in enumerate(data_rows):
+                if len(row) != num_cols:
                     findings.append(
-                        f"P1-数据异常: 列'{col_name}'所有值相同({col_values[0]})，可能为常量列"
+                        f"P1-数据异常: 第{i+2}行列数({len(row)})与表头({num_cols})不一致"
                     )
+
+            for j in range(num_cols):
+                col_values = []
+                for row in data_rows:
+                    if j < len(row):
+                        val = row[j].strip().strip('"')
+                        try:
+                            col_values.append(float(val))
+                        except ValueError:
+                            pass
+
+                if col_values:
+                    if len(set(col_values)) == 1 and len(col_values) > 2:
+                        col_name = header[j].strip() if j < len(header) else f"列{j+1}"
+                        findings.append(
+                            f"P1-数据异常: 列'{col_name}'所有值相同({col_values[0]})，可能为常量列"
+                        )
+        except Exception:
+            pass
 
     def _check_missing_values(self, content: str, findings: List[str]):
         """检查缺失值"""
@@ -145,8 +171,8 @@ class TrapDetector:
         if re.search(r'==\s*[\d.]+', code):
             findings.append("P1-浮点比较: 代码中使用 == 比较浮点数，应使用 np.isclose() 或容差比较")
 
-        if re.search(r'1e-?\d+\s*[+\-*/]', code):
-            findings.append("P2-硬编码: 代码中包含硬编码的数值容差，建议定义为常量")
+        if re.search(r'(?:tol|eps|atol|rtol|epsilon|threshold|tolerance)\s*=\s*1e-?\d+', code):
+            findings.append("P2-硬编码容差: 代码中硬编码了数值容差（如 tol=1e-6），建议定义为常量并标注选择依据")
 
         if "for " in code and "range(" in code:
             loops = re.findall(r'for.*?in\s+range\((\d+)\)', code)

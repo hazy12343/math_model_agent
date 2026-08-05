@@ -28,11 +28,10 @@ class WorkflowState(TypedDict):
     figure_files: List[str]
     reproducibility_manifest: Optional[str]
     code_exec_output: Optional[str]
+    verification_output: Optional[str]
 
     evidence_outline: Optional[str]
     paper_output: Optional[str]
-
-    verification_results: Optional[str]
 
     subagent_config: Dict[str, bool]
 

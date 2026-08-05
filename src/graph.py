@@ -945,8 +945,11 @@ def create_workflow(config: AppConfig):
             "error": None,
         }
 
-    def _run_figure_audit(figures_dir: str, questions: list = None) -> str:
-        script = Path(__file__).parent.parent / "math-modeling-skill" / "references" / "roles" / "编程手" / "scripts" / "figure_audit.py"
+    def _run_figure_audit(figures_dir: str, questions: list = None, skill_root: str = None) -> str:
+        if skill_root:
+            script = Path(skill_root) / "references" / "roles" / "编程手" / "scripts" / "figure_audit.py"
+        else:
+            script = Path(__file__).parent.parent / "math-modeling-skill" / "references" / "roles" / "编程手" / "scripts" / "figure_audit.py"
         if not script.exists():
             return "[图表审计脚本不存在]"
         try:
@@ -960,8 +963,20 @@ def create_workflow(config: AppConfig):
 
     def verify_node(state: WorkflowState) -> Dict[str, Any]:
         """数值验证节点：计算验证结果正确性"""
-        code = state.get("stage_output", "")
         exec_output = state.get("code_exec_output", "")
+        verify_text = ""
+
+        if not config.enable_verification:
+            return {
+                "current_stage": "verify",
+                "stage_history": state.get("stage_history", []) + ["verify"],
+                "code_exec_output": exec_output,
+                "verification_output": "[数值验证已禁用]",
+                "stage_output": state.get("stage_output", ""),
+                "error": None,
+            }
+
+        code = state.get("stage_output", "")
         problem = state.get("problem_description", "")
         project_root = state.get("project_root", str(config.project_root))
         figure_files = state.get("figure_files", [])
@@ -1014,6 +1029,7 @@ def create_workflow(config: AppConfig):
             "current_stage": "verify",
             "stage_history": state.get("stage_history", []) + ["verify"],
             "code_exec_output": exec_output + f"\n\n[数值验证]\n{verify_text}",
+            "verification_output": verify_text,
             "stage_output": state.get("stage_output", ""),
             "error": None if not has_p0 else "数值验证发现P0级错误",
         }
@@ -1031,7 +1047,7 @@ def create_workflow(config: AppConfig):
         if figure_files:
             figure_list = "\n".join(f"  - {Path(f).name}" for f in figure_files)
             figures_dir = str(Path(project_root) / "figures")
-            figure_audit_result = _run_figure_audit(figures_dir)
+            figure_audit_result = _run_figure_audit(figures_dir, skill_root=config.skill_root)
             figure_list = f"共 {len(figure_files)} 个图表文件:\n{figure_list}\n\n图表审计结果:\n{figure_audit_result}"
         else:
             figure_list = "（未检测到图表文件，请确认代码是否生成了图表）"

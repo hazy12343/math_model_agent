@@ -19,10 +19,15 @@ def render_progress_bar(current_stage: str, quality_gates: Dict[str, str]):
         "coding_p1": 1,
         "p1_check": 1,
         "coding_full": 2,
+        "code_exec": 2,
+        "verify": 2,
+        "model_comparison": 2,
+        "error_analysis": 2,
         "p2_check": 2,
         "writing_w1": 3,
         "w1_check": 3,
         "writing_full": 4,
+        "polish": 4,
         "w2_check": 4,
         "done": 5,
     }
@@ -54,10 +59,15 @@ def render_stage_indicator(current_stage: str):
         "coding_p1": "💻 最小实现中...",
         "p1_check": "🔍 P1 最小可运行门禁中...",
         "coding_full": "💻 全量实现中...",
+        "code_exec": "⚙️ 代码执行中...",
+        "verify": "🔬 数值验证中...",
+        "model_comparison": "📊 模型对比中...",
+        "error_analysis": "📉 误差分析中...",
         "p2_check": "🔍 P2 编程终检中...",
         "writing_w1": "📝 证据大纲构建中...",
         "w1_check": "🔍 W1 证据大纲门禁中...",
         "writing_full": "📝 论文撰写中...",
+        "polish": "✨ 论文润色中...",
         "w2_check": "🔍 W2 论文终检中...",
         "done": "✅ 完成",
         "error": "❌ 出错",
@@ -67,7 +77,7 @@ def render_stage_indicator(current_stage: str):
 
 
 def render_deliverables(state: dict):
-    if not state.get("modeling_report") and not state.get("code_files"):
+    if not state.get("modeling_report") and not state.get("code_files") and not state.get("verification_output") and not state.get("model_comparison") and not state.get("error_analysis") and not state.get("polished_paper"):
         return
 
     st.markdown("---")
@@ -80,6 +90,22 @@ def render_deliverables(state: dict):
     if state.get("terminology_table"):
         with st.expander("📊 术语表格", expanded=False):
             st.markdown(state["terminology_table"][:2000])
+
+    if state.get("verification_output"):
+        with st.expander("🔬 数值验证结果", expanded=False):
+            st.markdown(state["verification_output"][:2000])
+
+    if state.get("model_comparison"):
+        with st.expander("📊 模型对比", expanded=False):
+            st.markdown(state["model_comparison"][:2000])
+
+    if state.get("error_analysis"):
+        with st.expander("📉 误差分析", expanded=False):
+            st.markdown(state["error_analysis"][:2000])
+
+    if state.get("polished_paper"):
+        with st.expander("✨ 论文润色报告", expanded=False):
+            st.markdown(state["polished_paper"][:2000])
 
     if state.get("code_files"):
         with st.expander("💻 代码文件", expanded=False):
@@ -117,8 +143,12 @@ def _render_download_buttons():
         ("code_p1", "💻 求解代码 (P1)", "solution_p1.py"),
         ("code_full", "💻 求解代码 (完整)", "solution_full.py"),
         ("exec_output", "🖥️ 代码执行结果", "代码执行结果.txt"),
+        ("verification", "🔬 数值验证结果", "数值验证结果.md"),
+        ("model_comparison", "📊 模型对比", "模型对比.md"),
+        ("error_analysis", "📉 误差分析", "误差分析.md"),
         ("outline", "📋 证据大纲", "证据大纲.md"),
         ("paper", "📝 完整论文", "完整论文.md"),
+        ("polished_paper", "✨ 论文润色报告", "论文润色报告.md"),
     ]
 
     for key, label, filename in labels:

@@ -938,6 +938,7 @@ def create_workflow(config: AppConfig):
             "current_stage": "code_exec",
             "stage_history": state.get("stage_history", []) + ["code_exec"],
             "code_exec_output": output + syntax_note,
+            "raw_exec_output": output + syntax_note,
             "stage_output": state.get("stage_output", ""),
             "figure_files": figure_files,
             "result_files": result_files,
@@ -964,6 +965,8 @@ def create_workflow(config: AppConfig):
     def verify_node(state: WorkflowState) -> Dict[str, Any]:
         """数值验证节点：计算验证结果正确性"""
         exec_output = state.get("code_exec_output", "")
+        # 保存原始执行输出（不含后续追加的验证/对比/误差分析内容）
+        raw_exec = state.get("raw_exec_output", exec_output)
         verify_text = ""
 
         if not config.enable_verification:
@@ -971,6 +974,7 @@ def create_workflow(config: AppConfig):
                 "current_stage": "verify",
                 "stage_history": state.get("stage_history", []) + ["verify"],
                 "code_exec_output": exec_output,
+                "raw_exec_output": raw_exec,
                 "verification_output": "[数值验证已禁用]",
                 "stage_output": state.get("stage_output", ""),
                 "error": None,
@@ -1015,6 +1019,30 @@ def create_workflow(config: AppConfig):
             for f in fv["findings"]:
                 verify_results.append(f"  {f}")
 
+        # 新增：收敛性检查
+        cc = verifier.convergence_check(exec_output)
+        verify_results.append(f"[收敛性分析] 状态: {cc['status']}")
+        for f in cc["findings"]:
+            verify_results.append(f"  {f}")
+
+        # 新增：极端值测试
+        et = verifier.extreme_value_test(code_file)
+        verify_results.append(f"[极端值测试] 状态: {et['status']}")
+        for f in et["findings"]:
+            verify_results.append(f"  {f}")
+
+        # 新增：对称性检查
+        sym = verifier.symmetry_check(code_file, problem)
+        verify_results.append(f"[对称性检查] 状态: {sym['status']}")
+        for f in sym["findings"]:
+            verify_results.append(f"  {f}")
+
+        # 新增：守恒量检查
+        cons = verifier.conservation_check(code_file)
+        verify_results.append(f"[守恒量检查] 状态: {cons['status']}")
+        for f in cons["findings"]:
+            verify_results.append(f"  {f}")
+
         num_traps = trap_detector.detect_numerical_traps(code_file)
         if num_traps["trap_count"] > 0:
             verify_results.append(f"[数值陷阱] 检测到 {num_traps['trap_count']} 个陷阱")
@@ -1029,9 +1057,153 @@ def create_workflow(config: AppConfig):
             "current_stage": "verify",
             "stage_history": state.get("stage_history", []) + ["verify"],
             "code_exec_output": exec_output + f"\n\n[数值验证]\n{verify_text}",
+            "raw_exec_output": raw_exec,
             "verification_output": verify_text,
             "stage_output": state.get("stage_output", ""),
             "error": None if not has_p0 else "数值验证发现P0级错误",
+        }
+
+    def model_comparison_node(state: WorkflowState) -> Dict[str, Any]:
+        """模型对比节点：对比多种算法结果，选择最优方案"""
+        exec_output = state.get("code_exec_output", "")
+        raw_exec = state.get("raw_exec_output", exec_output)
+        code = state.get("stage_output", "")
+        project_root = state.get("project_root", str(config.project_root))
+
+        code_file = _extract_code_from_output(code)
+        comparison_text = ""
+
+        # 检测代码中是否包含多算法对比（使用原始执行输出避免被追加内容干扰）
+        has_multi_algorithm = False
+        algo_keywords = ["遗传算法", "粒子群", "模拟退火", "网格搜索", "坐标下降",
+                          "genetic", "particle swarm", "simulated annealing", "grid search",
+                          "对比", "比较", "compare", "comparison", "算法对比", "算法比较"]
+        for kw in algo_keywords:
+            if kw in code_file.lower() or kw in raw_exec.lower():
+                has_multi_algorithm = True
+                break
+
+        if has_multi_algorithm:
+            comparison_text = "✅ 检测到多算法对比，模型对比完成。"
+            # 从执行结果中提取对比表
+            algo_table_lines = []
+            in_table = False
+            for line in raw_exec.split("\n"):
+                if "算法" in line and ("结果" in line or "精度" in line or "耗时" in line):
+                    in_table = True
+                if in_table:
+                    algo_table_lines.append(line)
+                    if "---" in line and len(algo_table_lines) > 5:
+                        break
+            if algo_table_lines:
+                comparison_text += "\n\n" + "\n".join(algo_table_lines)
+        else:
+            comparison_text = "⚠️ 未检测到多算法对比，建议实现至少 2 种求解算法并对比结果。"
+
+        return {
+            "current_stage": "model_comparison",
+            "stage_history": state.get("stage_history", []) + ["model_comparison"],
+            "model_comparison": comparison_text,
+            "code_exec_output": exec_output + f"\n\n[模型对比]\n{comparison_text}",
+            "stage_output": state.get("stage_output", ""),
+            "error": None,
+        }
+
+    def error_analysis_node(state: WorkflowState) -> Dict[str, Any]:
+        """误差分析节点：基于验证结果生成误差来源分析"""
+        exec_output = state.get("code_exec_output", "")
+        raw_exec = state.get("raw_exec_output", exec_output)
+        verification_output = state.get("verification_output", "")
+        problem = state.get("problem_description", "")
+
+        error_text = "\n".join([
+            "## 误差分析报告",
+            "",
+            "### 误差来源分析",
+            "",
+            "| 误差来源 | 类型 | 影响程度 | 减缓措施 |",
+            "|----------|------|----------|----------|",
+            "| 测量误差 | 系统/随机 | 取决于测量精度 | 多次测量取平均、使用高精度仪器 |",
+            "| 模型简化误差 | 系统 | 需量级分析 | 增加模型复杂度、引入修正项 |",
+            "| 数值计算误差 | 随机 | 取决于算法和步长 | 减小步长、使用高精度算法 |",
+            "| 离散化误差 | 系统 | 取决于网格密度 | 加密网格、使用高阶格式 |",
+            "",
+            "### 数值验证结果汇总",
+            "",
+        ])
+
+        if verification_output:
+            error_text += f"验证结果:\n```\n{verification_output}\n```\n\n"
+
+        # 检查是否有蒙特卡洛验证（使用原始执行输出）
+        has_monte_carlo = any(kw in raw_exec.lower() for kw in ["蒙特卡洛", "monte carlo", "随机模拟", "置信区间"])
+        if has_monte_carlo:
+            error_text += "✅ 检测到蒙特卡洛验证，置信区间分析可用。\n"
+            # 提取置信区间信息
+            for line in exec_output.split("\n"):
+                if "置信区间" in line or "95%" in line or "标准差" in line or "std" in line.lower():
+                    error_text += f"  - {line.strip()}\n"
+        else:
+            error_text += "⚠️ 未检测到蒙特卡洛验证，建议对关键参数添加随机扰动并统计结果分布。\n"
+
+        return {
+            "current_stage": "error_analysis",
+            "stage_history": state.get("stage_history", []) + ["error_analysis"],
+            "error_analysis": error_text,
+            "code_exec_output": exec_output + f"\n\n[误差分析]\n{error_text}",
+            "stage_output": state.get("stage_output", ""),
+            "error": None,
+        }
+
+    def polish_node(state: WorkflowState) -> Dict[str, Any]:
+        """论文润色节点：对论文进行语言润色和格式校验"""
+        paper = state.get("paper_output", state.get("stage_output", ""))
+        evidence = state.get("evidence_outline", "")
+
+        polish_text = "\n".join([
+            "## 论文润色报告",
+            "",
+            "### 格式检查",
+            "",
+        ])
+
+        # 检查公式编号
+        formula_count = len(re.findall(r'\\tag\{|\\(\\d+\\)|\(\\d+\)', paper))
+        polish_text += f"- 检测到 {formula_count} 个公式编号\n"
+
+        # 检查图片引用
+        figure_refs = len(re.findall(r'图\s*\d+|表\s*\d+', paper))
+        polish_text += f"- 检测到 {figure_refs} 个图表引用\n"
+
+        # 检查章节结构
+        sections = re.findall(r'^#{1,3}\s+.+', paper, re.MULTILINE)
+        polish_text += f"- 检测到 {len(sections)} 个章节标题\n"
+        for s in sections:
+            polish_text += f"  - {s.strip()}\n"
+
+        # 检查参考文献
+        ref_count = len(re.findall(r'\[\d+\]', paper))
+        polish_text += f"- 检测到 {ref_count} 条参考文献引用\n"
+
+        # 检查是否包含必要章节
+        required_sections = ["摘要", "问题重述", "模型假设", "符号说明", "模型建立",
+                              "模型求解", "结果分析", "敏感性分析", "模型评价", "结论"]
+        missing = []
+        for sec in required_sections:
+            if sec not in paper:
+                missing.append(sec)
+        if missing:
+            polish_text += f"\n⚠️ 缺少以下章节: {', '.join(missing)}\n"
+        else:
+            polish_text += "\n✅ 所有必要章节均已包含\n"
+
+        return {
+            "current_stage": "polish",
+            "stage_history": state.get("stage_history", []) + ["polish"],
+            "polished_paper": polish_text,
+            "stage_output": state.get("stage_output", ""),
+            "paper_output": paper,
+            "error": None,
         }
 
     def p2_check_node(state: WorkflowState) -> Dict[str, Any]:
@@ -1238,13 +1410,19 @@ def create_workflow(config: AppConfig):
             return "coding_p1"
         return "coding_full"
 
-    def route_after_p2(state: WorkflowState) -> Literal["writing_w1", "coding_full"]:
+    def route_after_p2(state: WorkflowState) -> Literal["model_comparison", "coding_full"]:
         gates = state.get("quality_gates", {})
         retry = state.get("retry_counts", {}).get("P2", 0)
         if gates.get("P2") == "PASS":
-            return "writing_w1"
+            return "model_comparison"
         if retry < config.max_retries:
             return "coding_full"
+        return "model_comparison"
+
+    def route_after_model_comparison(state: WorkflowState) -> Literal["error_analysis", "writing_w1"]:
+        return "error_analysis"
+
+    def route_after_error_analysis(state: WorkflowState) -> Literal["writing_w1"]:
         return "writing_w1"
 
     def route_after_w1(state: WorkflowState) -> Literal["writing_full", "writing_w1"]:
@@ -1256,13 +1434,16 @@ def create_workflow(config: AppConfig):
             return "writing_w1"
         return "writing_full"
 
-    def route_after_w2(state: WorkflowState) -> Literal["done", "writing_full"]:
+    def route_after_w2(state: WorkflowState) -> Literal["polish", "writing_full"]:
         gates = state.get("quality_gates", {})
         retry = state.get("retry_counts", {}).get("W2", 0)
         if gates.get("W2") == "PASS":
-            return "done"
+            return "polish"
         if retry < config.max_retries:
             return "writing_full"
+        return "polish"
+
+    def route_after_polish(state: WorkflowState) -> Literal["done"]:
         return "done"
 
     workflow.add_node("init", init_node)
@@ -1273,11 +1454,14 @@ def create_workflow(config: AppConfig):
     workflow.add_node("coding_full", coding_full_node)
     workflow.add_node("code_exec", code_exec_node)
     workflow.add_node("verify", verify_node)
+    workflow.add_node("model_comparison", model_comparison_node)
+    workflow.add_node("error_analysis", error_analysis_node)
     workflow.add_node("p2_check", p2_check_node)
     workflow.add_node("writing_w1", writing_w1_node)
     workflow.add_node("w1_check", w1_check_node)
     workflow.add_node("writing_full", writing_full_node)
     workflow.add_node("w2_check", w2_check_node)
+    workflow.add_node("polish", polish_node)
     workflow.add_node("done", done_node)
 
     workflow.set_entry_point("init")
@@ -1290,11 +1474,14 @@ def create_workflow(config: AppConfig):
     workflow.add_edge("coding_full", "code_exec")
     workflow.add_edge("code_exec", "verify")
     workflow.add_edge("verify", "p2_check")
-    workflow.add_conditional_edges("p2_check", route_after_p2, {"writing_w1": "writing_w1", "coding_full": "coding_full"})
+    workflow.add_conditional_edges("p2_check", route_after_p2, {"model_comparison": "model_comparison", "coding_full": "coding_full"})
+    workflow.add_edge("model_comparison", "error_analysis")
+    workflow.add_edge("error_analysis", "writing_w1")
     workflow.add_edge("writing_w1", "w1_check")
     workflow.add_conditional_edges("w1_check", route_after_w1, {"writing_full": "writing_full", "writing_w1": "writing_w1"})
     workflow.add_edge("writing_full", "w2_check")
-    workflow.add_conditional_edges("w2_check", route_after_w2, {"done": "done", "writing_full": "writing_full"})
+    workflow.add_conditional_edges("w2_check", route_after_w2, {"polish": "polish", "writing_full": "writing_full"})
+    workflow.add_edge("polish", "done")
     workflow.add_edge("done", END)
 
     memory = MemorySaver()

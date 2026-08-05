@@ -26,6 +26,7 @@ class AppConfig:
     enable_multi_model_compare: bool = False
     enable_trap_detection: bool = True
     enable_innovation_guidance: bool = True
+    enable_national_competition_mode: bool = False
     subagents: dict = field(default_factory=lambda: {
         "official_rules": False,
         "attachment_inventory": False,

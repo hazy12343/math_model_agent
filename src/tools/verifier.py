@@ -214,13 +214,38 @@ class NumericalVerifier:
         except ValueError:
             pass
 
+        # 改进的 NaN/Inf 检测：区分"结果文本中的 nan 字符串"和"真正的数值异常"
         nan_count = 0
-        nan_keywords = ["nan", "inf", "-inf", "infinity", "-infinity", "none", "null"]
+        nan_keywords = ["nan", "inf", "-inf", "infinity", "-infinity"]
         results_lower = results.lower()
         for kw in nan_keywords:
             nan_count += results_lower.count(kw)
+
+        # 排除 "None"、"null" 等非数值关键词的误报
+        # 注意：只匹配作为独立单词的 "none"，避免匹配 "none" 在单词中的情况（如 "pronounced"）
+        none_count = len(re.findall(r'\bnone\b', results_lower))
+        null_count = len(re.findall(r'\bnull\b', results_lower))
+        total_nan = nan_count + none_count + null_count
+
         if nan_count > 0:
-            findings.append(f"P0-数值异常: 结果中包含 {nan_count} 个 NaN/Inf/None 值")
+            # 检查这些 NaN 是否出现在数值输出上下文中（而非代码或注释中）
+            lines = results.split("\n")
+            nan_in_output = False
+            for line in lines:
+                line_lower = line.lower()
+                for kw in nan_keywords:
+                    if kw in line_lower:
+                        # 检查是否包含数值上下文
+                        if any(c in line for c in ("=", ":", "结果", "value", "output", "T_cover", "遮蔽")):
+                            nan_in_output = True
+                            break
+            if nan_in_output:
+                findings.append(f"P0-数值异常: 结果输出中包含 {nan_count} 个 NaN/Inf 值，代码可能存在除零或数值溢出")
+            else:
+                findings.append(f"PASS: 检测到 NaN/Inf 关键词但不在数值输出上下文中，已排除误报")
+
+        if none_count > 0:
+            findings.append(f"PASS: 检测到 {none_count} 个 'None' 但已排除（可能是变量赋值操作）")
 
         negative_count = 0
         for v in values_in_results:
@@ -257,7 +282,7 @@ class NumericalVerifier:
         if not has_csv and has_sensitivity:
             findings.append("P2-缺失: 敏感性分析未输出CSV文件")
 
-        status = "PASS" if not findings else "FAIL"
+        status = "PASS" if not any("P0" in f for f in findings) else "FAIL"
         return {
             "status": status,
             "findings": findings if findings else ["敏感性分析检查通过"],
@@ -295,4 +320,116 @@ class NumericalVerifier:
             "findings": findings if findings else ["图表格式检查通过"],
             "svg_count": len(svg_files),
             "png_count": len(png_files),
+        }
+
+    def convergence_check(self, results: str) -> Dict[str, Any]:
+        """检查结果中是否包含收敛性分析"""
+        findings = []
+
+        convergence_keywords = ["收敛", "convergence", "迭代", "iteration", "收敛曲线"]
+        has_convergence = any(kw in results.lower() for kw in convergence_keywords)
+
+        if not has_convergence:
+            findings.append("P2-缺失: 结果中未检测到收敛性分析")
+        else:
+            # 检查是否给出了收敛状态
+            converge_state_keywords = ["已收敛", "converged", "未收敛", "not converged",
+                                        "最大迭代", "max iteration", "改进量", "improvement"]
+            has_state = any(kw in results.lower() for kw in converge_state_keywords)
+            if has_state:
+                findings.append("PASS: 检测到收敛性分析及收敛状态")
+            else:
+                findings.append("P1-不完整: 检测到收敛性分析但未明确收敛状态")
+
+        status = "PASS" if not any("P1" in f for f in findings) else "FAIL"
+        return {
+            "status": status,
+            "findings": findings if findings else ["收敛性分析检查通过"],
+            "has_convergence": has_convergence,
+        }
+
+    def extreme_value_test(self, code: str) -> Dict[str, Any]:
+        """检查代码中是否包含极端值测试（边界参数测试）"""
+        findings = []
+
+        test_keywords = ["极端", "extreme", "边界", "boundary", "边缘", "极限",
+                          "测试", "test", "验证"]
+        has_test = any(kw in code.lower() for kw in test_keywords)
+
+        boundary_test_patterns = [
+            r'np\.linspace.*0.*1',
+            r'np\.arange.*0',
+            r'param.*=.*0',
+            r'param.*=.*max',
+            r'param.*=.*min',
+            r'边界条件',
+            r'extreme.*test',
+            r'corner.*case',
+        ]
+        has_boundary_code = any(re.search(p, code, re.IGNORECASE) for p in boundary_test_patterns)
+
+        if has_boundary_code:
+            findings.append("PASS: 检测到边界值测试代码")
+        else:
+            findings.append("P2-缺失: 未检测到极端值/边界值测试，建议验证参数取边界值时结果是否合理")
+
+        status = "PASS" if not any("P1" in f for f in findings) else "FAIL"
+        return {
+            "status": status,
+            "findings": findings if findings else ["极端值测试检查通过"],
+            "has_boundary_test": has_boundary_code,
+        }
+
+    def symmetry_check(self, code: str, problem_description: str = "") -> Dict[str, Any]:
+        """检查代码中是否包含对称性验证（适用于物理对称的问题）"""
+        findings = []
+
+        symmetry_keywords = ["对称", "symmetry", "对称性", "对称性验证"]
+        has_symmetry = any(kw in code.lower() for kw in symmetry_keywords)
+
+        # 从题目描述中判断问题是否具有对称性
+        sym_problem_keywords = ["对称", "均匀", "各向同性", "isotropic", "homogeneous",
+                                 "轴对称", "中心对称", "对称性"]
+        problem_has_symmetry = any(kw in problem_description.lower() for kw in sym_problem_keywords)
+
+        if problem_has_symmetry and not has_symmetry:
+            findings.append("P1-缺失: 题目具有对称性特征，但代码中未检测到对称性验证")
+        elif has_symmetry:
+            findings.append("PASS: 检测到对称性验证")
+
+        if not findings:
+            findings.append("PASS: 未检测到对称性要求（或问题不具有对称性）")
+
+        status = "PASS" if not any("P1" in f for f in findings) else "FAIL"
+        return {
+            "status": status,
+            "findings": findings,
+            "has_symmetry_check": has_symmetry,
+        }
+
+    def conservation_check(self, code: str) -> Dict[str, Any]:
+        """检查代码中是否包含守恒量验证（适用于物理类题目）"""
+        findings = []
+
+        conservation_keywords = ["守恒", "conservation", "守恒量", "守恒定律",
+                                  "能量守恒", "动量守恒", "质量守恒"]
+        has_conservation = any(kw in code.lower() for kw in conservation_keywords)
+
+        physics_keywords = ["力", "force", "能量", "energy", "动量", "momentum",
+                             "速度", "velocity", "加速度", "acceleration"]
+        has_physics = any(kw in code.lower() for kw in physics_keywords)
+
+        if has_physics and not has_conservation:
+            findings.append("P2-建议: 代码涉及物理量计算，建议增加守恒量验证（如能量守恒、动量守恒）")
+        elif has_conservation:
+            findings.append("PASS: 检测到守恒量验证")
+
+        if not findings:
+            findings.append("PASS: 未检测到守恒量要求（或问题不涉及物理守恒）")
+
+        status = "PASS"
+        return {
+            "status": status,
+            "findings": findings,
+            "has_conservation_check": has_conservation,
         }

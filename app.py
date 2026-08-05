@@ -110,8 +110,13 @@ def _build_initial_state() -> dict:
         "figure_files": [],
         "reproducibility_manifest": "",
         "code_exec_output": "",
+        "raw_exec_output": "",
+        "verification_output": "",
         "evidence_outline": st.session_state.workflow_state.get("evidence_outline", ""),
         "paper_output": st.session_state.workflow_state.get("paper_output", ""),
+        "error_analysis": st.session_state.workflow_state.get("error_analysis", ""),
+        "model_comparison": st.session_state.workflow_state.get("model_comparison", ""),
+        "polished_paper": st.session_state.workflow_state.get("polished_paper", ""),
         "word_paper": "",
         "latex_project": "",
         "pdf_paper": "",
@@ -153,6 +158,22 @@ def _run_full_workflow():
         # 保存代码执行输出
         if node_state.get("code_exec_output"):
             outputs["code_exec_output"] = node_state["code_exec_output"]
+
+        # 保存数值验证结果
+        if node_state.get("verification_output"):
+            outputs["verification_output"] = node_state["verification_output"]
+
+        # 保存模型对比结果
+        if node_state.get("model_comparison"):
+            outputs["model_comparison"] = node_state["model_comparison"]
+
+        # 保存误差分析
+        if node_state.get("error_analysis"):
+            outputs["error_analysis"] = node_state["error_analysis"]
+
+        # 保存论文润色
+        if node_state.get("polished_paper"):
+            outputs["polished_paper"] = node_state["polished_paper"]
 
         # 保存证据大纲和论文（使用专用字段）
         if node_state.get("evidence_outline"):
@@ -208,6 +229,14 @@ def _run_single_stage(stage: str):
             outputs["evidence_outline"] = node_state["evidence_outline"]
         if node_state.get("code_exec_output"):
             outputs["code_exec_output"] = node_state["code_exec_output"]
+        if node_state.get("verification_output"):
+            outputs["verification_output"] = node_state["verification_output"]
+        if node_state.get("model_comparison"):
+            outputs["model_comparison"] = node_state["model_comparison"]
+        if node_state.get("error_analysis"):
+            outputs["error_analysis"] = node_state["error_analysis"]
+        if node_state.get("polished_paper"):
+            outputs["polished_paper"] = node_state["polished_paper"]
 
         log_entry = f"[{node_name}]"
         if stage_output:
@@ -308,6 +337,30 @@ def _save_outputs(outputs: dict):
         path = output_dir / "代码执行结果.txt"
         path.write_text(outputs["code_exec_output"], encoding="utf-8")
         st.session_state.output_files["exec_output"] = str(path)
+
+    # 数值验证结果
+    if "verification_output" in outputs and outputs["verification_output"]:
+        path = output_dir / "数值验证结果.md"
+        path.write_text(outputs["verification_output"], encoding="utf-8")
+        st.session_state.output_files["verification"] = str(path)
+
+    # 模型对比结果
+    if "model_comparison" in outputs and outputs["model_comparison"]:
+        path = output_dir / "模型对比.md"
+        path.write_text(outputs["model_comparison"], encoding="utf-8")
+        st.session_state.output_files["model_comparison"] = str(path)
+
+    # 误差分析
+    if "error_analysis" in outputs and outputs["error_analysis"]:
+        path = output_dir / "误差分析.md"
+        path.write_text(outputs["error_analysis"], encoding="utf-8")
+        st.session_state.output_files["error_analysis"] = str(path)
+
+    # 论文润色报告
+    if "polished_paper" in outputs and outputs["polished_paper"]:
+        path = output_dir / "论文润色报告.md"
+        path.write_text(outputs["polished_paper"], encoding="utf-8")
+        st.session_state.output_files["polished_paper"] = str(path)
 
     count = len(st.session_state.output_files)
     st.session_state.run_log.append(f"📁 {count} 个文件已保存到 {output_dir}")

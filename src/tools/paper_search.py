@@ -1,8 +1,7 @@
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional
-from langchain_core.tools import BaseTool, tool
+from langchain_core.tools import tool
 
 
 class PaperSearchTool:
@@ -31,7 +30,7 @@ class PaperSearchTool:
                 return "[搜索超时]"
             except Exception as e:
                 return f"[搜索失败: {e}]"
-        return search_tool
+        return search_papers
 
     @property
     def search_openalex_tool(self):

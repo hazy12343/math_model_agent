@@ -328,6 +328,54 @@ LLM 生成的代码可能因上下文窗口截断导致语法错误。系统内�
 
 ---
 
+## 📦 依赖安装
+
+### 核心依赖
+
+```bash
+pip install -r requirements.txt
+```
+
+核心依赖已覆盖数学建模常用场景：
+
+| 类别 | 依赖 | 用途 |
+|------|------|------|
+| 科学计算 | `numpy`, `scipy`, `sympy` | 数值计算、符号推导、方程求解 |
+| 数据分析 | `pandas`, `openpyxl` | 表格处理、数据清洗、Excel 读写 |
+| 机器学习 | `scikit-learn` | 回归、分类、聚类、降维 |
+| 优化求解 | `PuLP` | 线性/整数规划 |
+| 可视化 | `matplotlib`, `seaborn` | 静态图表、统计图、中文显示 |
+| 文件处理 | `PyPDF2`, `python-docx` | PDF/Word 读写 |
+
+### 可选依赖（按需安装）
+
+```bash
+# 图论与网络分析
+pip install networkx
+
+# 凸优化
+pip install cvxpy
+
+# 统计分析
+pip install statsmodels
+
+# 深度学习
+pip install torch
+
+# 交互式图表
+pip install plotly
+
+# 地图可视化
+pip install folium
+
+# 词云图
+pip install wordcloud
+```
+
+完整可选依赖列表见 `requirements.txt` 底部注释。
+
+---
+
 ## ⚙️ 配置参考
 
 ### 环境变量

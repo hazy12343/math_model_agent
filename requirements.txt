@@ -29,15 +29,15 @@ python-docx>=1.0.0
 requests>=2.31.0
 
 # ===== 可选依赖（按需安装） =====
-# cvxpy>=1.4.0          # 凸优化
-# networkx>=3.1         # 图论与网络分析
-# statsmodels>=0.14     # 统计分析
-# xgboost>=2.0          # 梯度提升树
-# lightgbm>=4.0         # 轻量级梯度提升
-# torch>=2.0            # PyTorch（深度学习）
-# tensorflow>=2.13      # TensorFlow（深度学习）
-# gensim>=4.3           # 主题模型 / 词向量
-# wordcloud>=1.9        # 词云图
-# plotly>=5.15          # 交互式图表
-# folium>=0.14          # 地图可视化
-# pyecharts>=2.0        # ECharts 可视化
+cvxpy>=1.4.0          # 凸优化
+networkx>=3.1         # 图论与网络分析
+statsmodels>=0.14     # 统计分析
+xgboost>=2.0          # 梯度提升树
+lightgbm>=4.0         # 轻量级梯度提升
+torch>=2.0            # PyTorch（深度学习）
+tensorflow>=2.13      # TensorFlow（深度学习）
+gensim>=4.3           # 主题模型 / 词向量
+wordcloud>=1.9        # 词云图
+plotly>=5.15          # 交互式图表
+folium>=0.14          # 地图可视化
+pyecharts>=2.0        # ECharts 可视化

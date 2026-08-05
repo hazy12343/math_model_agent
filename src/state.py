@@ -32,9 +32,7 @@ class WorkflowState(TypedDict):
     evidence_outline: Optional[str]
     paper_output: Optional[str]
 
-    word_paper: Optional[str]
-    latex_project: Optional[str]
-    pdf_paper: Optional[str]
+    verification_results: Optional[str]
 
     subagent_config: Dict[str, bool]
 

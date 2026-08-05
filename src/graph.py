@@ -15,6 +15,8 @@ from src.agents.modeling import ModelingAgent
 from src.agents.coding import CodingAgent
 from src.agents.writing import WritingAgent
 from src.agents.quality import QualityCheckAgent
+from src.tools.verifier import NumericalVerifier
+from src.tools.detector import TrapDetector
 
 
 def _extract_code_from_output(text: str) -> str:
@@ -606,6 +608,23 @@ def create_workflow(config: AppConfig):
         retry_counts = state.get("retry_counts", {})
         m1_retry = retry_counts.get("M1", 0)
 
+        trap_detector = TrapDetector(project_root)
+        trap_note = ""
+        if problem:
+            attachment_content = ""
+            for f in files:
+                try:
+                    content = Path(f).read_text(encoding="utf-8", errors="replace")
+                    attachment_content += content[:3000]
+                except Exception:
+                    pass
+            trap_result = trap_detector.detect_data_anomalies(problem, attachment_content)
+            if trap_result["anomaly_count"] > 0:
+                trap_note = "\n\n# ⚠️ 题目陷阱检测\n" + "\n".join(
+                    f"- {f}" for f in trap_result["findings"] if "P0" in f or "P1" in f
+                )
+                problem = problem + trap_note
+
         if m1_retry > 0:
             feedback = state.get("stage_output", "")
             if not feedback:
@@ -620,7 +639,12 @@ def create_workflow(config: AppConfig):
         else:
             result = modeling.analyze_problem(problem, files, messages, project_root)
 
-        # 尝试从报告中提取术语表格部分
+        model_risks = trap_detector.detect_model_risks(result)
+        if model_risks["risk_count"] > 0:
+            result += "\n\n# ⚠️ 模型风险提示\n" + "\n".join(
+                f"- {f}" for f in model_risks["findings"] if "P0" in f or "P1" in f
+            )
+
         term_table = _extract_terminology_table(result)
 
         return {
@@ -934,6 +958,65 @@ def create_workflow(config: AppConfig):
         except Exception as e:
             return f"[图表审计失败: {e}]"
 
+    def verify_node(state: WorkflowState) -> Dict[str, Any]:
+        """数值验证节点：计算验证结果正确性"""
+        code = state.get("stage_output", "")
+        exec_output = state.get("code_exec_output", "")
+        problem = state.get("problem_description", "")
+        project_root = state.get("project_root", str(config.project_root))
+        figure_files = state.get("figure_files", [])
+
+        verifier = NumericalVerifier(project_root)
+        trap_detector = TrapDetector(project_root)
+
+        code_file = _extract_code_from_output(code)
+        verify_results = []
+
+        cv = verifier.cross_validation(code_file, exec_output)
+        verify_results.append(f"[交叉验证] 状态: {cv['status']}")
+        for f in cv["findings"]:
+            verify_results.append(f"  {f}")
+
+        da = verifier.dimensional_analysis(code_file)
+        verify_results.append(f"[量纲分析] 状态: {da['status']}")
+        for f in da["findings"]:
+            verify_results.append(f"  {f}")
+
+        if problem:
+            bc = verifier.boundary_condition_check(exec_output, problem)
+            verify_results.append(f"[边界条件] 状态: {bc['status']}")
+            for f in bc["findings"]:
+                verify_results.append(f"  {f}")
+
+        sc = verifier.sensitivity_check(exec_output)
+        verify_results.append(f"[敏感性分析] 状态: {sc['status']}")
+        for f in sc["findings"]:
+            verify_results.append(f"  {f}")
+
+        if figure_files:
+            figures_dir = str(Path(project_root) / "figures")
+            fv = verifier.format_verification(figures_dir)
+            verify_results.append(f"[图表格式] 状态: {fv['status']}")
+            for f in fv["findings"]:
+                verify_results.append(f"  {f}")
+
+        num_traps = trap_detector.detect_numerical_traps(code_file)
+        if num_traps["trap_count"] > 0:
+            verify_results.append(f"[数值陷阱] 检测到 {num_traps['trap_count']} 个陷阱")
+            for f in num_traps["findings"]:
+                if "P0" in f or "P1" in f:
+                    verify_results.append(f"  {f}")
+
+        verify_text = "\n".join(verify_results)
+        has_p0 = any("P0" in f for f in verify_results)
+
+        return {
+            "current_stage": "verify",
+            "stage_history": state.get("stage_history", []) + ["verify"],
+            "code_exec_output": exec_output + f"\n\n[数值验证]\n{verify_text}",
+            "stage_output": state.get("stage_output", ""),
+            "error": None if not has_p0 else "数值验证发现P0级错误",
+        }
 
     def p2_check_node(state: WorkflowState) -> Dict[str, Any]:
         messages = state.get("messages", [])
@@ -1173,6 +1256,7 @@ def create_workflow(config: AppConfig):
     workflow.add_node("p1_check", p1_check_node)
     workflow.add_node("coding_full", coding_full_node)
     workflow.add_node("code_exec", code_exec_node)
+    workflow.add_node("verify", verify_node)
     workflow.add_node("p2_check", p2_check_node)
     workflow.add_node("writing_w1", writing_w1_node)
     workflow.add_node("w1_check", w1_check_node)
@@ -1188,7 +1272,8 @@ def create_workflow(config: AppConfig):
     workflow.add_edge("coding_p1", "p1_check")
     workflow.add_conditional_edges("p1_check", route_after_p1, {"coding_full": "coding_full", "coding_p1": "coding_p1"})
     workflow.add_edge("coding_full", "code_exec")
-    workflow.add_edge("code_exec", "p2_check")
+    workflow.add_edge("code_exec", "verify")
+    workflow.add_edge("verify", "p2_check")
     workflow.add_conditional_edges("p2_check", route_after_p2, {"writing_w1": "writing_w1", "coding_full": "coding_full"})
     workflow.add_edge("writing_w1", "w1_check")
     workflow.add_conditional_edges("w1_check", route_after_w1, {"writing_full": "writing_full", "writing_w1": "writing_w1"})

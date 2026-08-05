@@ -22,6 +22,10 @@ class AppConfig:
     max_tokens: int = 16384
     max_retries: int = 3
     code_exec_timeout: int = 120
+    enable_verification: bool = True
+    enable_multi_model_compare: bool = False
+    enable_trap_detection: bool = True
+    enable_innovation_guidance: bool = True
     subagents: dict = field(default_factory=lambda: {
         "official_rules": False,
         "attachment_inventory": False,

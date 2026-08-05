@@ -223,10 +223,7 @@ class NumericalVerifier:
 
         # 排除 "None"、"null" 等非数值关键词的误报
         # 注意：只匹配作为独立单词的 "none"，避免匹配 "none" 在单词中的情况（如 "pronounced"）
-        none_count = len(re.findall(r'\bnone\b', results_lower))
-        null_count = len(re.findall(r'\bnull\b', results_lower))
-        total_nan = nan_count + none_count + null_count
-
+        none_count = results_lower.count("none")
         if nan_count > 0:
             # 检查这些 NaN 是否出现在数值输出上下文中（而非代码或注释中）
             lines = results.split("\n")
@@ -427,7 +424,7 @@ class NumericalVerifier:
         if not findings:
             findings.append("PASS: 未检测到守恒量要求（或问题不涉及物理守恒）")
 
-        status = "PASS"
+        status = "PASS" if not any("P0" in f for f in findings) else "FAIL"
         return {
             "status": status,
             "findings": findings,

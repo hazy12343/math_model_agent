@@ -2,7 +2,7 @@ import os
 import re
 import shutil
 import sys
-from typing import Literal, Dict, Any
+from typing import Literal, Dict, Any, List
 import subprocess
 import tempfile
 from pathlib import Path
@@ -211,13 +211,16 @@ def _truncate_to_valid(code: str) -> str:
     original_err = _validate_code_syntax(code)
     if not original_err:
         return code
+    # 提取错误消息部分（去掉行号前缀），避免行号变化导致误判
+    original_msg = original_err.split(": ", 1)[-1] if ": " in original_err else original_err
     max_remove = min(len(lines) - 1, 300)
     for remove_count in range(1, max_remove + 1):
         truncated = "\n".join(lines[:-remove_count])
         err = _validate_code_syntax(truncated)
         if not err:
             return truncated
-        if err != original_err:
+        err_msg = err.split(": ", 1)[-1] if ": " in err else err
+        if err_msg != original_msg:
             return truncated
     return code
 
@@ -517,6 +520,89 @@ def _validate_code_syntax(code: str) -> str:
         return f"行 {e.lineno}: {e.msg}"
 
 
+def _check_result_plausibility(output: str, code: str, problem: str) -> List[str]:
+    """检测代码执行结果是否合理，返回 P0/P1 级警告"""
+    warnings = []
+    output_lower = output.lower()
+
+    # 1. 检测算法是否全部返回 0
+    zero_patterns = [
+        r'最优[值解].*?[=:]\s*0\.?0?\s*[秒s]',
+        r'[=:]\s*0\.0+\s*[秒s]',
+        r'全部为0',
+        r'最优.*?0\.0+',
+    ]
+    for pat in zero_patterns:
+        if re.search(pat, output):
+            warnings.append("P0-算法失败: 检测到算法返回 0 值，可能存在约束过强或算法实现错误")
+            break
+
+    # 2. 检测迭代类算法是否收敛
+    if not re.search(r'已收敛|converged|收敛', output, re.IGNORECASE):
+        warnings.append("P1-收敛性: 未检测到收敛性判断，迭代类算法必须输出收敛状态")
+
+    # 3. 检测蒙特卡洛验证
+    mc_keywords = ["蒙特卡洛", "monte carlo", "随机模拟", "置信区间", "95%", "扰动"]
+    if not any(kw in output_lower for kw in mc_keywords):
+        warnings.append("P1-蒙特卡洛: 未检测到蒙特卡洛验证，国赛要求对关键参数进行随机扰动验证")
+
+    # 4. 检测多算法对比
+    algo_keywords = ["遗传算法", "粒子群", "模拟退火", "网格搜索", "坐标下降",
+                      "genetic", "particle swarm", "simulated annealing", "grid search"]
+    if not any(kw in output_lower for kw in algo_keywords):
+        warnings.append("P1-多算法: 未检测到多种算法对比，国赛要求至少 2 种算法求解并对比")
+
+    # 5. 检测敏感性分析
+    sens_keywords = ["敏感性分析", "sensitivity", "敏感度", "参数扫描"]
+    if not any(kw in output_lower for kw in sens_keywords):
+        warnings.append("P1-敏感性: 未检测到敏感性分析，国赛要求对关键参数进行敏感性分析")
+
+    # 6. 检测结果中是否有 NaN/Inf（在数值输出上下文中）
+    lines = output.split("\n")
+    nan_in_output = False
+    for line in lines:
+        line_lower = line.lower()
+        if any(kw in line_lower for kw in ["nan", "inf", "-inf"]):
+            if any(c in line for c in ("=", ":", "结果", "value", "output")):
+                nan_in_output = True
+                break
+    if nan_in_output:
+        warnings.append("P0-数值异常: 结果输出中包含 NaN/Inf 值，代码可能存在除零或数值溢出")
+
+    return warnings
+
+
+def _extract_comparison_table(output: str) -> str:
+    """从执行输出中提取算法对比表"""
+    lines = output.split("\n")
+    table_lines = []
+    in_table = False
+    table_count = 0
+    for i, line in enumerate(lines):
+        # 检测表头行（包含算法/方法+结果/精度/耗时等关键词）
+        if re.search(r'\|?\s*(算法|方法|Method|Algorithm)\s*\|', line, re.IGNORECASE):
+            # 检查是否包含结果/精度/耗时等列
+            if re.search(r'(结果|精度|耗时|稳定性|收敛|误差|时间|score|time|accuracy)', line, re.IGNORECASE):
+                in_table = True
+                table_lines.append(f"\n--- 对比表 {table_count + 1} ---")
+                table_lines.append(line)
+                continue
+        if in_table:
+            stripped = line.strip()
+            if not stripped or (not stripped.startswith("|") and not stripped.startswith("+") and not stripped.startswith("---") and not re.search(r'\|', stripped)):
+                if len(table_lines) >= 4:  # 表头 + 分隔线 + 至少一行数据
+                    table_count += 1
+                in_table = False
+                continue
+            table_lines.append(line)
+
+    # 如果还有未关闭的表格
+    if in_table and len(table_lines) >= 4:
+        table_count += 1
+
+    return "\n".join(table_lines) if table_lines else ""
+
+
 def _parse_quality_status(result: str) -> str:
     text = result.upper()
     m = re.search(r'状态[：:]\s*`?\s*(PASS|FAIL|BLOCKED)', text)
@@ -538,18 +624,12 @@ def _parse_quality_status(result: str) -> str:
                 for kw in ("PASS", "FAIL", "BLOCKED"):
                     if kw in nl and all(k not in nl for k in ("PASS", "FAIL", "BLOCKED") if k != kw):
                         return kw
-    if "PASS" in text and "FAIL" not in text and "BLOCKED" not in text:
-        pass_count = text.count("PASS")
-        fail_count = text.count("FAIL")
-        blocked_count = text.count("BLOCKED")
-        if pass_count > max(fail_count, blocked_count, 0):
-            return "PASS"
+    if re.search(r'\bPASS\b', text) and not re.search(r'\bFAIL\b', text) and not re.search(r'\bBLOCKED\b', text):
+        return "PASS"
     if re.search(r'\bFAIL\b', text):
         return "FAIL"
     if re.search(r'\bBLOCKED\b', text):
         return "BLOCKED"
-    if re.search(r'\bPASS\b', text):
-        return "PASS"
     if "通过" in result or "✅" in result:
         return "PASS"
     if "未通过" in result or "失败" in result or "❌" in result:
@@ -817,6 +897,7 @@ def create_workflow(config: AppConfig):
 
     def code_exec_node(state: WorkflowState) -> Dict[str, Any]:
         code = state.get("stage_output", "")
+        problem = state.get("problem_description", "")
 
         code_file = _extract_code_from_output(code)
         if not code_file.strip():
@@ -874,75 +955,129 @@ def create_workflow(config: AppConfig):
                         "error": "代码语法错误",
                     }
 
-        exec_dir = Path(tempfile.mkdtemp(prefix="code_exec_"))
-        exec_file = exec_dir / "solution.py"
-        exec_file.write_text(code_file, encoding="utf-8")
+        # ====== 多轮 Debug 循环 ======
+        MAX_DEBUG_ROUNDS = 3
+        final_output = ""
+        final_figure_files = []
+        final_result_files = []
+        final_code_files = []
+        exec_success = False
+        debug_round = 0
 
-        figure_files = []
-        result_files = []
-        code_files = []
+        while debug_round < MAX_DEBUG_ROUNDS:
+            exec_dir = Path(tempfile.mkdtemp(prefix="code_exec_"))
+            exec_file = exec_dir / "solution.py"
+            exec_file.write_text(code_file, encoding="utf-8")
 
-        try:
-            result = subprocess.run(
-                [sys.executable, str(exec_file)],
-                capture_output=True,
-                timeout=config.code_exec_timeout,
-                cwd=str(exec_dir),
-                env={**os.environ, "PYTHONIOENCODING": "utf-8"},
-            )
-            output = result.stdout.decode("utf-8", errors="replace")
-            if result.stderr:
-                output += f"\n\n[stderr]:\n{result.stderr.decode('utf-8', errors='replace')}"
-            if result.returncode != 0:
-                output += f"\n\n[退出码: {result.returncode}]"
+            figure_files = []
+            result_files = []
+            code_files = []
 
-            project_root = Path(state.get("project_root", str(config.project_root)))
-            figures_dir = project_root / "figures"
-            results_dir = project_root / "results"
-            figures_dir.mkdir(parents=True, exist_ok=True)
-            results_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                result = subprocess.run(
+                    [sys.executable, str(exec_file)],
+                    capture_output=True,
+                    timeout=config.code_exec_timeout,
+                    cwd=str(exec_dir),
+                    env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+                )
+                output = result.stdout.decode("utf-8", errors="replace")
+                if result.stderr:
+                    output += f"\n\n[stderr]:\n{result.stderr.decode('utf-8', errors='replace')}"
+                if result.returncode != 0:
+                    output += f"\n\n[退出码: {result.returncode}]"
 
-            img_extensions = {".png", ".svg", ".jpg", ".jpeg", ".pdf", ".eps"}
-            result_extensions = {".csv", ".xlsx", ".xls", ".json", ".txt", ".npz", ".pkl", ".pickle"}
+                project_root = Path(state.get("project_root", str(config.project_root)))
+                figures_dir = project_root / "figures"
+                results_dir = project_root / "results"
+                figures_dir.mkdir(parents=True, exist_ok=True)
+                results_dir.mkdir(parents=True, exist_ok=True)
 
-            for f in exec_dir.rglob("*"):
-                if f.is_file() and f.name != "solution.py":
-                    suffix = f.suffix.lower()
-                    if suffix in img_extensions:
-                        dest = figures_dir / f.name
-                        shutil.copy2(f, dest)
-                        figure_files.append(str(dest))
-                    elif suffix in result_extensions:
-                        dest = results_dir / f.name
-                        shutil.copy2(f, dest)
-                        result_files.append(str(dest))
-                    elif suffix == ".py":
-                        dest = project_root / f.name
-                        shutil.copy2(f, dest)
-                        code_files.append(str(dest))
+                img_extensions = {".png", ".svg", ".jpg", ".jpeg", ".pdf", ".eps"}
+                result_extensions = {".csv", ".xlsx", ".xls", ".json", ".txt", ".npz", ".pkl", ".pickle"}
 
-            if figure_files:
-                output += f"\n\n[生成图表: {len(figure_files)} 个文件]"
-                for ff in figure_files:
-                    output += f"\n  - {Path(ff).name}"
-            if result_files:
-                output += f"\n\n[生成结果文件: {len(result_files)} 个]"
-        except subprocess.TimeoutExpired:
-            output = f"⏱️ 代码执行超时（{config.code_exec_timeout}秒）"
-        except Exception as e:
-            output = f"❌ 代码执行失败: {e}"
-        finally:
-            shutil.rmtree(exec_dir, ignore_errors=True)
+                for f in exec_dir.rglob("*"):
+                    if f.is_file() and f.name != "solution.py":
+                        suffix = f.suffix.lower()
+                        if suffix in img_extensions:
+                            dest = figures_dir / f.name
+                            shutil.copy2(f, dest)
+                            figure_files.append(str(dest))
+                        elif suffix in result_extensions:
+                            dest = results_dir / f.name
+                            shutil.copy2(f, dest)
+                            result_files.append(str(dest))
+                        elif suffix == ".py":
+                            dest = project_root / f.name
+                            shutil.copy2(f, dest)
+                            code_files.append(str(dest))
+
+                if figure_files:
+                    output += f"\n\n[生成图表: {len(figure_files)} 个文件]"
+                    for ff in figure_files:
+                        output += f"\n  - {Path(ff).name}"
+                if result_files:
+                    output += f"\n\n[生成结果文件: {len(result_files)} 个]"
+
+                if result.returncode == 0:
+                    # 执行成功
+                    final_output = output
+                    final_figure_files = figure_files
+                    final_result_files = result_files
+                    final_code_files = code_files
+                    exec_success = True
+                    shutil.rmtree(exec_dir, ignore_errors=True)
+                    break
+                else:
+                    # 执行失败，尝试多轮修复
+                    if debug_round < MAX_DEBUG_ROUNDS - 1:
+                        debug_feedback = f"代码执行失败（第 {debug_round + 1} 轮），错误信息:\n{output[:3000]}"
+                        try:
+                            fixed_code = _extract_code_from_output(
+                                coding.fix_code(debug_feedback, state.get("messages", []), state.get("project_root", str(config.project_root)))
+                            )
+                            if fixed_code.strip():
+                                code_file = _inject_chinese_font(fixed_code)
+                                debug_round += 1
+                                continue
+                        except Exception:
+                            pass
+                        # 如果修复失败（code_file为空或异常），使用原始代码继续下一轮
+                        # 但避免写入空文件
+                        if not code_file.strip():
+                            code_file = _extract_code_from_output(state.get("stage_output", ""))
+                    # 最后一次尝试或修复失败，保留当前输出
+                    final_output = output
+                    final_figure_files = figure_files
+                    final_result_files = result_files
+                    final_code_files = code_files
+
+            except subprocess.TimeoutExpired:
+                final_output = f"⏱️ 代码执行超时（{config.code_exec_timeout}秒）"
+            except Exception as e:
+                final_output = f"❌ 代码执行失败: {e}"
+            finally:
+                shutil.rmtree(exec_dir, ignore_errors=True)
+            debug_round += 1
+
+        if debug_round > 0 and exec_success:
+            syntax_note += f"\n[多轮调试: 第 {debug_round + 1} 轮执行成功]"
+
+        # ====== 结果合理性检测 ======
+        plausibility_warnings = _check_result_plausibility(final_output, code_file, problem)
+        if plausibility_warnings:
+            warning_text = "\n\n[结果合理性检测]\n" + "\n".join(f"  ⚠️ {w}" for w in plausibility_warnings)
+            final_output += warning_text
 
         return {
             "current_stage": "code_exec",
             "stage_history": state.get("stage_history", []) + ["code_exec"],
-            "code_exec_output": output + syntax_note,
-            "raw_exec_output": output + syntax_note,
+            "code_exec_output": final_output + syntax_note,
+            "raw_exec_output": final_output + syntax_note,
             "stage_output": state.get("stage_output", ""),
-            "figure_files": figure_files,
-            "result_files": result_files,
-            "code_files": code_files,
+            "figure_files": final_figure_files,
+            "result_files": final_result_files,
+            "code_files": final_code_files,
             "error": None,
         }
 
@@ -1043,6 +1178,14 @@ def create_workflow(config: AppConfig):
         for f in cons["findings"]:
             verify_results.append(f"  {f}")
 
+        # 新增：结果异常检测（使用 detector 的 detect_result_anomalies 方法）
+        result_anomalies = trap_detector.detect_result_anomalies(exec_output, code_file)
+        if result_anomalies["anomaly_count"] > 0:
+            verify_results.append(f"[结果异常检测] 状态: {result_anomalies['status']}")
+            for f in result_anomalies["findings"]:
+                if "P0" in f or "P1" in f:
+                    verify_results.append(f"  {f}")
+
         num_traps = trap_detector.detect_numerical_traps(code_file)
         if num_traps["trap_count"] > 0:
             verify_results.append(f"[数值陷阱] 检测到 {num_traps['trap_count']} 个陷阱")
@@ -1069,6 +1212,7 @@ def create_workflow(config: AppConfig):
         raw_exec = state.get("raw_exec_output", exec_output)
         code = state.get("stage_output", "")
         project_root = state.get("project_root", str(config.project_root))
+        problem = state.get("problem_description", "")
 
         code_file = _extract_code_from_output(code)
         comparison_text = ""
@@ -1084,21 +1228,60 @@ def create_workflow(config: AppConfig):
                 break
 
         if has_multi_algorithm:
-            comparison_text = "✅ 检测到多算法对比，模型对比完成。"
+            comparison_text = "✅ 检测到多算法对比\n\n"
             # 从执行结果中提取对比表
-            algo_table_lines = []
-            in_table = False
-            for line in raw_exec.split("\n"):
-                if "算法" in line and ("结果" in line or "精度" in line or "耗时" in line):
-                    in_table = True
-                if in_table:
-                    algo_table_lines.append(line)
-                    if "---" in line and len(algo_table_lines) > 5:
+            table = _extract_comparison_table(raw_exec)
+            if table:
+                comparison_text += f"### 提取的对比数据\n\n```\n{table}\n```\n\n"
+            else:
+                comparison_text += "⚠️ 检测到多算法对比，但未能从输出中提取结构化的对比表格。\n\n"
+
+            # 从执行结果中提取数值对比
+            comparison_text += "### 定量对比分析\n\n"
+
+            # 用正则从输出中提取最优值
+            best_values = {}
+            # 尝试匹配 "网格搜索: X.XX s" 或 "网格搜索最优值: X.XX"
+            for algo_name, algo_key in [("网格搜索", "网格搜索"), ("遗传算法", "遗传算法"),
+                                         ("粒子群", "粒子群"), ("模拟退火", "模拟退火")]:
+                patterns = [
+                    rf'{algo_key}.*?[：:]\s*(\d+\.?\d*)\s*[秒s]',
+                    rf'{algo_key}.*?最优[值解].*?[=:]\s*(\d+\.?\d*)',
+                    rf'{algo_key}.*?结果[：:]\s*(\d+\.?\d*)',
+                ]
+                for pat in patterns:
+                    m = re.search(pat, raw_exec)
+                    if m:
+                        best_values[algo_name] = float(m.group(1))
                         break
-            if algo_table_lines:
-                comparison_text += "\n\n" + "\n".join(algo_table_lines)
+
+            if best_values:
+                comparison_text += "| 指标 | 网格搜索 | 遗传算法 | 差异 |\n"
+                comparison_text += "|------|----------|----------|------|\n"
+                for name, val in best_values.items():
+                    comparison_text += f"| {name} 最优结果 | {val:.4f} s | - | - |\n"
+                if len(best_values) >= 2:
+                    vals = list(best_values.values())
+                    diff = abs(vals[0] - vals[1])
+                    comparison_text += f"| 算法间差异 | - | - | {diff:.4f} s |\n"
+                    if diff < 0.01 * max(vals):
+                        comparison_text += "| **结论** | **结果一致，解可靠** | | |\n"
+                    else:
+                        comparison_text += "| **结论** | **结果差异较大，需进一步分析原因** | | |\n"
+            else:
+                comparison_text += "（未能从执行输出中自动提取定量对比数据，请查看下方原始输出）\n\n"
+                # 尝试从原始文本中提取更多数值信息
+                for line in raw_exec.split("\n"):
+                    if re.search(r'\d+\.\d+', line) and any(kw in line.lower() for kw in ["最优", "最佳", "结果", "解"]):
+                        comparison_text += f"- 原始输出: `{line.strip()}`\n"
+                if "0.00" in raw_exec and "遗传算法" in raw_exec:
+                    comparison_text += "\n⚠️ 遗传算法返回 0.00，可能存在约束处理问题\n"
+                    comparison_text += "💡 建议：使用惩罚函数法处理约束，或调整变异/交叉算子\n"
         else:
-            comparison_text = "⚠️ 未检测到多算法对比，建议实现至少 2 种求解算法并对比结果。"
+            comparison_text = "⚠️ 未检测到多算法对比，建议实现至少 2 种求解算法并对比结果。\n\n"
+            comparison_text += "**国赛要求**：对每个子问题的求解，必须实现至少 2 种不同求解算法\n"
+            comparison_text += "（如：网格搜索 vs 遗传算法、梯度下降 vs 粒子群），并输出对比表格。\n"
+            comparison_text += "如果两种算法结果一致，说明解可靠；如果不一致，需分析原因。\n"
 
         return {
             "current_stage": "model_comparison",
@@ -1110,41 +1293,124 @@ def create_workflow(config: AppConfig):
         }
 
     def error_analysis_node(state: WorkflowState) -> Dict[str, Any]:
-        """误差分析节点：基于验证结果生成误差来源分析"""
+        """误差分析节点：基于验证结果和真实执行输出，生成针对性的误差来源分析"""
         exec_output = state.get("code_exec_output", "")
         raw_exec = state.get("raw_exec_output", exec_output)
         verification_output = state.get("verification_output", "")
         problem = state.get("problem_description", "")
+        messages = state.get("messages", [])
+
+        # 尝试使用 LLM 生成针对性的误差分析
+        llm_analysis = ""
+        try:
+            # 从执行结果中提取关键数值
+            extracted_values = []
+            for line in raw_exec.split("\n"):
+                line_stripped = line.strip()
+                if re.search(r'\d+\.\d+', line_stripped) and any(kw in line_stripped.lower() for kw in
+                    ["最优", "最佳", "结果", "遮蔽", "时长", "时间", "距离", "速度", "角度", "收敛"]):
+                    extracted_values.append(line_stripped)
+
+            analysis_prompt = f"""基于以下代码执行结果和题目描述，生成针对性的误差分析报告。
+
+## 题目
+{problem[:2000]}
+
+## 代码执行结果关键数据
+{chr(10).join(extracted_values[:20]) if extracted_values else "（未提取到关键数值）"}
+
+## 数值验证结果
+{verification_output[:2000] if verification_output else "（无验证结果）"}
+
+## 完整执行输出
+{raw_exec[:3000]}
+
+请生成一份结构化的误差分析报告，要求：
+1. 必须给出具体数值估计，不能只说"取决于精度"
+2. 分析网格搜索步长导致的误差量级
+3. 分析模型简化（如忽略空气阻力）导致的误差量级
+4. 分析蒙特卡洛验证的置信区间宽度对结论的影响
+5. 指出最主要的误差来源
+6. 给出具体的改进建议
+
+使用 Markdown 表格输出每条误差的具体数值估计。"""
+            project_root = state.get("project_root", str(config.project_root))
+            writing_prompt = writing.load_system_prompt().replace("{project_root}", project_root)
+            llm_analysis = writing.invoke(messages, user_input=analysis_prompt, system_prompt=writing_prompt)
+        except Exception as e:
+            llm_analysis = f"（LLM 分析不可用: {e}）"
 
         error_text = "\n".join([
             "## 误差分析报告",
             "",
-            "### 误差来源分析",
+            "### 1. 误差来源定量分析",
             "",
-            "| 误差来源 | 类型 | 影响程度 | 减缓措施 |",
+            "| 误差来源 | 类型 | 估计量级 | 减缓措施 |",
             "|----------|------|----------|----------|",
-            "| 测量误差 | 系统/随机 | 取决于测量精度 | 多次测量取平均、使用高精度仪器 |",
-            "| 模型简化误差 | 系统 | 需量级分析 | 增加模型复杂度、引入修正项 |",
-            "| 数值计算误差 | 随机 | 取决于算法和步长 | 减小步长、使用高精度算法 |",
-            "| 离散化误差 | 系统 | 取决于网格密度 | 加密网格、使用高阶格式 |",
-            "",
-            "### 数值验证结果汇总",
-            "",
         ])
 
-        if verification_output:
-            error_text += f"验证结果:\n```\n{verification_output}\n```\n\n"
+        # 从执行结果中提取具体数值来填充误差表
+        has_monte_carlo = any(kw in raw_exec.lower() for kw in ["蒙特卡洛", "monte carlo", "随机模拟", "置信区间", "95%"])
+        has_grid_search = any(kw in raw_exec.lower() for kw in ["网格搜索", "grid search", "步长"])
+        has_sensitivity = any(kw in raw_exec.lower() for kw in ["敏感性", "sensitivity", "敏感度"])
 
-        # 检查是否有蒙特卡洛验证（使用原始执行输出）
-        has_monte_carlo = any(kw in raw_exec.lower() for kw in ["蒙特卡洛", "monte carlo", "随机模拟", "置信区间"])
-        if has_monte_carlo:
-            error_text += "✅ 检测到蒙特卡洛验证，置信区间分析可用。\n"
-            # 提取置信区间信息
-            for line in exec_output.split("\n"):
-                if "置信区间" in line or "95%" in line or "标准差" in line or "std" in line.lower():
-                    error_text += f"  - {line.strip()}\n"
+        # 提取网格搜索步长信息
+        grid_step = ""
+        for line in raw_exec.split("\n"):
+            if "步长" in line or "步长" in line.lower():
+                grid_step = line.strip()
+                break
+
+        if has_grid_search:
+            error_text += f"\n| 网格搜索离散化误差 | 系统 | 取决于步长 {grid_step if grid_step else '（未指定）'} | 在最优解附近加密搜索、使用梯度下降局部优化 |"
         else:
-            error_text += "⚠️ 未检测到蒙特卡洛验证，建议对关键参数添加随机扰动并统计结果分布。\n"
+            error_text += "\n| 网格搜索离散化误差 | 系统 | 需量化分析 | 减小步长、使用高阶插值 |"
+
+        if has_monte_carlo:
+            # 提取置信区间
+            ci_lines = []
+            for line in raw_exec.split("\n"):
+                if "置信区间" in line or "95%" in line or "标准差" in line or "std" in line.lower():
+                    ci_lines.append(line.strip())
+            ci_text = "；".join(ci_lines[:3]) if ci_lines else "（已执行蒙特卡洛验证）"
+            error_text += f"\n| 随机扰动误差 | 随机 | 由蒙特卡洛验证给出：{ci_text} | 增加模拟次数、使用拉丁超立方采样 |"
+        else:
+            error_text += "\n| 随机扰动误差 | 随机 | 未进行蒙特卡洛验证，无法量化 | 对关键参数添加 ±5% 随机扰动，运行 ≥100 次模拟 |"
+
+        if has_sensitivity:
+            error_text += "\n| 参数敏感性误差 | 系统 | 由敏感性分析给出 | 对高敏感参数优先提高测量精度 |"
+        else:
+            error_text += "\n| 参数敏感性误差 | 系统 | 未进行敏感性分析，无法量化 | 对关键参数进行单因素敏感性分析 |"
+
+        error_text += "\n| 模型简化误差（忽略空气阻力等） | 系统 | 低速运动时可忽略，高速运动时需引入阻力修正项 | 引入空气阻力模型，与无阻力模型对比 |"
+        error_text += "\n| 数值计算误差 | 随机 | 取决于算法精度和迭代次数 | 提高迭代次数、使用高精度浮点数 |"
+
+        error_text += "\n\n### 2. 数值验证结果汇总\n\n"
+        if verification_output:
+            error_text += f"```\n{verification_output}\n```\n"
+
+        error_text += "\n### 3. 针对性分析\n\n"
+        if llm_analysis and not llm_analysis.startswith("（LLM 分析不可用"):
+            # 提取 LLM 分析中的关键结论
+            error_text += llm_analysis[:3000] + "\n"
+        else:
+            error_text += "以下为基于执行结果的自动分析：\n\n"
+            if "0.00" in raw_exec and "遗传算法" in raw_exec:
+                error_text += "- ⚠️ 遗传算法返回 0.00，说明约束处理存在问题。建议：\n"
+                error_text += "  - 使用惩罚函数法处理约束\n"
+                error_text += "  - 增大初始种群规模（≥50）\n"
+                error_text += "  - 缩小变异范围，确保生成的子代在可行域内\n\n"
+            if has_monte_carlo:
+                error_text += "- ✅ 蒙特卡洛验证已执行，结果可信度较高\n\n"
+            if has_sensitivity:
+                error_text += "- ✅ 敏感性分析已执行，关键参数的影响已量化\n\n"
+
+        error_text += "\n### 4. 改进建议\n\n"
+        error_text += "1. **加密网格搜索**：在最优解附近将步长缩小 5 倍，进行局部精细搜索\n"
+        error_text += "2. **修复遗传算法**：使用惩罚函数法处理约束，确保能产出有效解\n"
+        error_text += "3. **增加蒙特卡洛模拟次数**：从 100 次增加到 500 次，提高置信区间精度\n"
+        error_text += "4. **引入空气阻力模型**：与无阻力模型对比，量化简化误差\n"
+        error_text += "5. **敏感性分析扩展**：对更多参数进行敏感性分析，识别关键参数\n"
 
         return {
             "current_stage": "error_analysis",
@@ -1156,14 +1422,21 @@ def create_workflow(config: AppConfig):
         }
 
     def polish_node(state: WorkflowState) -> Dict[str, Any]:
-        """论文润色节点：对论文进行语言润色和格式校验"""
+        """论文润色节点：调用 LLM 对论文进行语言润色和内容优化"""
         paper = state.get("paper_output", state.get("stage_output", ""))
         evidence = state.get("evidence_outline", "")
+        messages = state.get("messages", [])
+        problem = state.get("problem_description", "")
+        modeling_report = state.get("modeling_report", "")
+        verification_output = state.get("verification_output", "")
+        error_analysis = state.get("error_analysis", "")
+        model_comparison = state.get("model_comparison", "")
 
+        # 1. 格式检查（本地执行）
         polish_text = "\n".join([
             "## 论文润色报告",
             "",
-            "### 格式检查",
+            "### 1. 格式检查",
             "",
         ])
 
@@ -1178,12 +1451,8 @@ def create_workflow(config: AppConfig):
         # 检查章节结构
         sections = re.findall(r'^#{1,3}\s+.+', paper, re.MULTILINE)
         polish_text += f"- 检测到 {len(sections)} 个章节标题\n"
-        for s in sections:
+        for s in sections[:10]:
             polish_text += f"  - {s.strip()}\n"
-
-        # 检查参考文献
-        ref_count = len(re.findall(r'\[\d+\]', paper))
-        polish_text += f"- 检测到 {ref_count} 条参考文献引用\n"
 
         # 检查是否包含必要章节
         required_sections = ["摘要", "问题重述", "模型假设", "符号说明", "模型建立",
@@ -1196,6 +1465,53 @@ def create_workflow(config: AppConfig):
             polish_text += f"\n⚠️ 缺少以下章节: {', '.join(missing)}\n"
         else:
             polish_text += "\n✅ 所有必要章节均已包含\n"
+
+        # 检查参考文献
+        ref_count = len(re.findall(r'\[\d+\]', paper))
+        polish_text += f"- 检测到 {ref_count} 条参考文献引用\n"
+
+        # 检查论文是否完整（是否有截断）
+        if paper.strip().endswith("...") or paper.strip().endswith("……"):
+            polish_text += "\n⚠️ 论文结尾疑似被截断，建议检查输出长度\n"
+
+        # 2. 调用 LLM 进行实际润色（补充论文内容）
+        try:
+            supplement_prompt = f"""请对以下数学建模论文进行润色和内容补充。
+
+## 题目
+{problem[:2000]}
+
+## 建模报告摘要
+{modeling_report[:2000]}
+
+## 数值验证结果
+{verification_output[:2000] if verification_output else "（无）"}
+
+## 模型对比结果
+{model_comparison[:2000] if model_comparison else "（无）"}
+
+## 误差分析
+{error_analysis[:2000] if error_analysis else "（无）"}
+
+## 当前论文
+{paper[:6000]}
+
+请完成以下任务：
+1. 如果论文结尾不完整，补充模型评价和结论部分
+2. 将数值验证结果、模型对比结果、误差分析的关键结论整合到论文中
+3. 确保摘要中的关键数值与正文一致
+4. 补充参考文献列表（至少 5 篇相关文献）
+5. 确保语言学术化、简洁化
+
+输出润色后的完整论文。"""
+            polished_content = writing.invoke(messages, user_input=supplement_prompt)
+            polish_text += f"\n\n### 2. LLM 润色结果\n\n"
+            polish_text += polished_content[:5000] + "\n\n..."
+            polish_text += "\n\n---\n✅ 论文润色完成。润色后的论文已更新到 `paper_output` 字段。\n"
+            # 将润色后的完整论文更新到 paper_output
+            paper = polished_content
+        except Exception as e:
+            polish_text += f"\n\n### 2. LLM 润色\n\n（LLM 润色不可用: {e}，保留原始论文）\n"
 
         return {
             "current_stage": "polish",
@@ -1419,12 +1735,6 @@ def create_workflow(config: AppConfig):
             return "coding_full"
         return "model_comparison"
 
-    def route_after_model_comparison(state: WorkflowState) -> Literal["error_analysis", "writing_w1"]:
-        return "error_analysis"
-
-    def route_after_error_analysis(state: WorkflowState) -> Literal["writing_w1"]:
-        return "writing_w1"
-
     def route_after_w1(state: WorkflowState) -> Literal["writing_full", "writing_w1"]:
         gates = state.get("quality_gates", {})
         retry = state.get("retry_counts", {}).get("W1", 0)
@@ -1528,7 +1838,6 @@ def create_single_stage_workflow(config: AppConfig, stage: str):
             result = writing.write_paper(modeling_report, code_results, "", evidence_outline, messages, project_root)
             return {
                 "current_stage": "done",
-                "word_paper": "完整论文.docx",
                 "paper_output": result,
                 "messages": [AIMessage(content=result)],
                 "stage_output": result,

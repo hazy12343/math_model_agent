@@ -43,9 +43,12 @@ class BaseAgent:
         self,
         messages: List[BaseMessage],
         user_input: Optional[str] = None,
+        system_prompt: Optional[str] = None,
         **kwargs
     ) -> str:
-        if self._system_prompt is None:
+        if system_prompt is not None:
+            self._system_prompt = system_prompt
+        elif self._system_prompt is None:
             self._system_prompt = self.load_system_prompt()
 
         full_messages = [SystemMessage(content=self._system_prompt)]

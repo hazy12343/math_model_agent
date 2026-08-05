@@ -56,6 +56,16 @@ class WritingAgent(BaseAgent):
 - 创新点必须有数学公式支撑，不能只是文字描述
 - 在"模型评价"部分对比标准方法和创新方法的差异
 - 如果建模报告中有"模型风险提示"，论文中必须回应对这些风险的解决方案
+
+# 参考文献要求（关键）
+- 论文结尾必须包含参考文献列表，至少 5 篇
+- 参考文献应包括：
+  - 1-2 篇经典方法文献（如牛顿力学、运动学分析等相关标准教材）
+  - 1-2 篇题目领域相关文献（如烟幕干扰、导弹防御、无人机协同等）
+  - 1-2 篇算法方法文献（如网格搜索、遗传算法、粒子群等优化方法）
+- 参考文献格式：[编号] 作者. 标题. 期刊/出版社, 年份.
+- 可以使用 `paper_search` 工具搜索相关学术文献
+- 题目给出的物理定律和数学公式（如牛顿定律、运动学方程）属于已知常识，无需引用外部文献
 """)
         return "\n".join(parts)
 
@@ -96,7 +106,7 @@ class WritingAgent(BaseAgent):
 5. 代码输出或文献支撑
 
 输出证据大纲，格式使用 Markdown。"""
-        return self.invoke(messages, user_input=user_msg)
+        return self.invoke(messages, user_input=user_msg, system_prompt=prompt)
 
     def write_paper(
         self,
@@ -108,6 +118,18 @@ class WritingAgent(BaseAgent):
         project_root: str,
     ) -> str:
         prompt = self.load_system_prompt().replace("{project_root}", project_root)
+
+        # 搜索相关参考文献
+        references = ""
+        try:
+            search_results = self.paper_search.search(
+                query="数学建模 烟幕 遮蔽 优化 无人机 遗传算法 网格搜索",
+                max_results=5
+            )
+            if search_results:
+                references = "\n\n## 搜索到的参考文献\n\n" + str(search_results)[:2000]
+        except Exception:
+            pass
 
         user_msg = f"""W1已通过，请撰写完整论文（W2阶段）：
 
@@ -123,14 +145,17 @@ class WritingAgent(BaseAgent):
 ## 证据大纲
 {evidence_outline[:3000]}
 
+{references}
+
 请完成：
 1. 按官方结构撰写完整正文
 2. 生成 Word 论文内容
 3. 生成 LaTeX 源码
 4. 确保两种格式内容一致
 
-**重要**：如果代码结果不可用，请在数值位置标注"待计算"并注明"结果将在代码运行后填入"，但论文的模型推导、公式、算法步骤必须完整。"""
-        return self.invoke(messages, user_input=user_msg)
+**重要**：如果代码结果不可用，请在数值位置标注"待计算"并注明"结果将在代码运行后填入"，但论文的模型推导、公式、算法步骤必须完整。
+**参考文献**：论文结尾必须包含参考文献列表，至少 5 篇。使用搜索到的参考文献和标准教材作为引用来源。"""
+        return self.invoke(messages, user_input=user_msg, system_prompt=prompt)
 
     def fix_paper(
         self,
@@ -145,4 +170,4 @@ class WritingAgent(BaseAgent):
 {feedback}
 
 请修正论文并重新输出。"""
-        return self.invoke(messages, user_input=user_msg)
+        return self.invoke(messages, user_input=user_msg, system_prompt=prompt)

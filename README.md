@@ -9,6 +9,7 @@
 [![LangGraph](https://img.shields.io/badge/LangGraph-0.2+-orange.svg)](https://github.com/langchain-ai/langgraph)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.35+-red.svg)](https://streamlit.io)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Last Updated](https://img.shields.io/badge/Last%20Updated-2025.08-brightgreen.svg)]()
 
 </div>
 
@@ -250,7 +251,7 @@ math-model-agent/
 | 3 | `_repair_global_declaration` | 将 `global` 声明移至函数体顶部 |
 | 4 | `_iterative_repair` | 最多 15 轮迭代修复 |
 | 5 | `_remove_empty_functions` | 移除空函数体/空循环/空条件块 |
-| 6 | `_truncate_to_valid` | 逐行删除末尾直到语法正确（最多 300 行） |
+| 6 | `_truncate_to_valid` | 逐行删除末尾直到语法正确（最多 300 行），**支持行号无关的错误消息比较，避免误判** |
 | 7 | `_inject_chinese_font` | 检测 CJK 内容 → 注入 matplotlib 中文字体配置 |
 | 8 | `_ensure_main_block` | 注入 `if __name__ == "__main__"` 入口 |
 
@@ -279,7 +280,7 @@ math-model-agent/
 |------|------|---------|
 | **M1** | 建模终检 | 子问题覆盖、假设依据、公式自洽、单位约束、模型可实现性、验证方案 |
 | **P1** | 最小可运行 | 代码可执行性、退出码、输入输出追溯、单位数值范围、关键约束满足 |
-| **P2** | 编程终检 | 代码完整性、结果合理性、图表覆盖度、中文标签、数值验证结果 |
+| **P2** | 编程终检 | 代码完整性、结果合理性、图表覆盖度、中文标签、数值验证结果、**算法完整性（含收敛性检查、蒙特卡洛验证、敏感性分析、约束处理检查）** |
 | **W1** | 证据大纲 | 主张-证据映射、摘要数值一致性、图表公式引用路径 |
 | **W2** | 论文终检 | 规则合规、主张-证据一致、数值单位正确、图表引用、文献可追溯 |
 
@@ -366,6 +367,20 @@ math-model-agent/
 ## 📄 许可证
 
 本项目基于 [math-modeling-skill](https://github.com/XiaoMaColtAI/math-modeling-skill) 构建，仅供学习参考。
+
+---
+
+## 🆕 更新日志
+
+### 2025.08 — Bug 修复与质量改进
+
+| 类别 | 变更内容 |
+|------|---------|
+| 🐛 **Bug 修复** | 修复 `_truncate_to_valid` 错误消息行号误判、`error_analysis_node` 中 `{project_root}` 占位符未替换、`conservation_check` 硬编码状态、变量名拼写错误（`striped`→`line_stripped`）、`none_count` 未初始化等 11 项 Bug |
+| 🧹 **代码清理** | 移除死代码（`route_after_model_comparison`、`route_after_error_analysis`）、重复字典键、不可达条件分支 |
+| 🔧 **质检增强** | P2 门禁新增算法完整性检查（收敛性、蒙特卡洛验证、敏感性分析、约束处理检查） |
+| 🪤 **陷阱检测** | 新增约束处理检查（惩罚函数法/可行解初始化/修复法识别） |
+| ⚡ **性能优化** | 优化正则匹配（使用 `\b` 单词边界）、错误消息比较逻辑、工作流路由逻辑 |
 
 ---
 

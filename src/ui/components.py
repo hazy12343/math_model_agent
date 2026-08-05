@@ -120,12 +120,6 @@ def render_deliverables(state: dict):
     if state.get("figure_files"):
         st.markdown(f"📈 图表：{len(state['figure_files'])} 张")
 
-    if state.get("word_paper"):
-        st.markdown(f"📝 Word 论文：已生成")
-
-    if state.get("pdf_paper"):
-        st.markdown(f"📕 PDF 论文：已生成")
-
     _render_download_buttons()
 
 

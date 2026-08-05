@@ -197,3 +197,76 @@ class TrapDetector:
             "findings": findings,
             "trap_count": len([f for f in findings if "P0" in f or "P1" in f]),
         }
+
+    def detect_result_anomalies(self, output: str, code: str) -> Dict[str, Any]:
+        """检测执行结果中的异常模式"""
+        findings = []
+        output_lower = output.lower()
+
+        # 1. 检测所有结果全为 0
+        zero_patterns = [
+            r'最优[值解].*?[=:]\s*0\.?0?\s*[秒s]',
+            r'[=:]\s*0\.0+\s*[秒s]',
+            r'全部为0',
+        ]
+        zero_count = 0
+        for pat in zero_patterns:
+            zero_count += len(re.findall(pat, output))
+        if zero_count >= 2:
+            findings.append("P0-结果异常: 检测到多个结果为零，可能算法实现有误或约束过强")
+
+        # 2. 检测 NaN/Inf 出现在结果输出中（非代码行）
+        nan_in_output = False
+        for line in output.split("\n"):
+            line_lower = line.lower()
+            if any(kw in line_lower for kw in ["nan", "inf", "-inf"]):
+                if any(c in line for c in ("=", ":", "结果", "value", "output", "最优", "最佳")):
+                    nan_in_output = True
+                    break
+        if nan_in_output:
+            findings.append("P0-数值异常: 结果输出中包含 NaN/Inf 值，代码可能存在除零或数值溢出")
+
+        # 3. 检测结果是否在合理范围内
+        # 提取所有浮点数及其上下文
+        for line in output.split("\n"):
+            line_lower = line.lower()
+            if any(kw in line_lower for kw in ["负值", "负数", "negative", "error", "错误", "失败"]):
+                if any(c in line for c in ("=", ":", "结果", "输出", "value")):
+                    findings.append(f"P1-结果异常: 检测到负值/错误提示: {line.strip()[:80]}")
+                    break
+
+        # 4. 检测迭代类算法的收敛性问题
+        has_iteration = bool(re.search(r'迭代|iteration|代数|generation|epoch', output_lower))
+        has_convergence = bool(re.search(r'收敛|converge|converged', output_lower))
+        if has_iteration and not has_convergence:
+            findings.append("P1-收敛性: 代码包含迭代算法但未输出收敛状态，无法判断是否收敛")
+
+        # 5. 检测蒙特卡洛验证
+        has_mc = bool(re.search(r'蒙特卡洛|monte carlo|随机模拟', output_lower))
+        if not has_mc:
+            findings.append("P1-蒙特卡洛: 未检测到蒙特卡洛验证，国赛建议对关键参数进行随机扰动验证")
+
+        # 6. 检测结果数量级是否合理（对常见物理量）
+        has_distance = bool(re.search(r'距离|distance|位移|disp', output_lower))
+        if has_distance:
+            # 提取距离值
+            dist_values = re.findall(r'(?:距离|distance|位移)[^:]*?[=:]\s*(\d+\.?\d*)', output)
+            if dist_values:
+                for val in dist_values:
+                    try:
+                        fval = float(val)
+                        if fval > 1e6:
+                            findings.append(f"P1-量级异常: 距离值 {fval} 过大，可能单位转换错误")
+                        elif fval < 1e-6:
+                            findings.append(f"P1-量级异常: 距离值 {fval} 过小，可能单位转换错误")
+                    except ValueError:
+                        pass
+
+        if not findings:
+            findings.append("未检测到明显的结果异常")
+
+        return {
+            "status": "PASS" if not any("P0" in f for f in findings) else "FAIL",
+            "findings": findings,
+            "anomaly_count": len([f for f in findings if "P0" in f or "P1" in f]),
+        }

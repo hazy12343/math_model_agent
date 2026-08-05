@@ -53,8 +53,6 @@ if "workflow_state" not in st.session_state:
         "stage_output": "",
         "modeling_report": "",
         "terminology_table": "",
-        "word_paper": "",
-        "pdf_paper": "",
     }
 
 if "messages" not in st.session_state:
@@ -117,9 +115,6 @@ def _build_initial_state() -> dict:
         "error_analysis": st.session_state.workflow_state.get("error_analysis", ""),
         "model_comparison": st.session_state.workflow_state.get("model_comparison", ""),
         "polished_paper": st.session_state.workflow_state.get("polished_paper", ""),
-        "word_paper": "",
-        "latex_project": "",
-        "pdf_paper": "",
         "subagent_config": st.session_state.config.subagents,
         "error": None,
         "retry_counts": {},

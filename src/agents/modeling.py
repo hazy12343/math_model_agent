@@ -156,7 +156,7 @@ class ModelingAgent(BaseAgent):
 4. 生成题目分析报告.md 和 术语表格.md 的内容
 
 请直接输出分析报告内容，格式使用 Markdown。"""
-        return self.invoke(messages, user_input=user_msg)
+        return self.invoke(messages, user_input=user_msg, system_prompt=prompt)
 
     def fix_model(
         self,
@@ -171,4 +171,4 @@ class ModelingAgent(BaseAgent):
 {feedback}
 
 请修正题目分析报告.md 和 术语表格.md，只输出修正后的完整内容。"""
-        return self.invoke(messages, user_input=user_msg)
+        return self.invoke(messages, user_input=user_msg, system_prompt=prompt)

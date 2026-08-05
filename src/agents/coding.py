@@ -155,7 +155,7 @@ matplotlib.rcParams['svg.fonttype'] = 'none'
 - 使用 ```python 代码块包裹完整代码
 
 只输出代码和运行说明，不要生成完整图表。"""
-        return self.invoke(messages, user_input=user_msg)
+        return self.invoke(messages, user_input=user_msg, system_prompt=prompt)
 
     def implement_full(
         self,
@@ -210,6 +210,20 @@ matplotlib.rcParams['svg.fonttype'] = 'none'
 - **优先保证代码完整性和可执行性，而非图表数量**
 - 图表至少生成 3 张（轨迹图、过程图、结果图各1张），不要为了凑数而增加代码量
 
+### 精细搜索策略（国赛关键）
+- 对网格搜索/参数扫描类任务，必须采用"先粗后精"两阶段搜索：
+  1. **粗搜索**：大范围、大步长，确定最优解的大致区域
+  2. **精细搜索**：在粗搜索最优解附近，将步长缩小 5~10 倍，进行局部加密
+  3. 输出精细搜索前后的对比，展示优化幅度
+  4. 例如：方向角步长从 45° → 5°，速度步长从 20m/s → 2m/s
+
+### 约束处理方法（国赛关键）
+- 对于迭代类优化算法（遗传算法、粒子群等），必须正确处理约束：
+  1. **可行解初始化 + 可行解变异**（最优方案）：初始化时只生成满足约束的个体，变异操作确保子代仍然满足约束
+  2. **惩罚函数法**（次优方案）：对违反约束的个体施加惩罚项，惩罚系数随进化代数动态增加
+  3. **修复法**（备用方案）：对违反约束的个体进行修复，映射到最近可行解
+- **禁止**：直接返回 0 作为不可行解的适应度值！这会导致算法完全失效。
+
 ### 输出格式
 - 使用 ```python 代码块包裹完整代码
 - 代码块后附上运行说明
@@ -217,7 +231,7 @@ matplotlib.rcParams['svg.fonttype'] = 'none'
 - 结果保存到 results/ 目录
 
 请输出完整代码和所有结果。"""
-        return self.invoke(messages, user_input=user_msg)
+        return self.invoke(messages, user_input=user_msg, system_prompt=prompt)
 
     def fix_code(
         self,
@@ -235,4 +249,4 @@ matplotlib.rcParams['svg.fonttype'] = 'none'
 
 ⚠️ 代码总行数控制在 600 行以内，确保完整输出不被截断。优先保证代码完整性。
 ⚠️ 所有图表标题、轴标签、图例、注释必须使用中文，代码开头必须配置中文字体。"""
-        return self.invoke(messages, user_input=user_msg)
+        return self.invoke(messages, user_input=user_msg, system_prompt=prompt)

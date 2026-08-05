@@ -95,7 +95,7 @@ matplotlib.rcParams['svg.fonttype'] = 'none'
                 return result.stdout + "\n" + result.stderr
             except Exception as e:
                 return f"[环境检查失败: {e}]"
-        return _check_env_tool
+        return check_environment
 
     def implement_minimal(
         self,

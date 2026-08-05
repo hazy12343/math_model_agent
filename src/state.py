@@ -39,7 +39,7 @@ class WorkflowState(TypedDict):
     subagent_config: Dict[str, bool]
 
     error: Optional[str]
-    retry_count: int
+    retry_counts: Dict[str, int]
     stage_output: Optional[str]
 
     user_input: Optional[str]

@@ -48,6 +48,18 @@ class CodingAgent(BaseAgent):
 - 先用小实例跑通，再全量计算
 - 图表必须使用出版级样式
 - 代码必须可复现
+
+# 中文显示要求（关键）
+- **所有图表的标题、轴标签、图例、注释必须使用中文**
+- **代码开头必须配置中文字体**：
+```python
+import matplotlib
+matplotlib.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
+matplotlib.rcParams['axes.unicode_minus'] = False
+matplotlib.rcParams['svg.fonttype'] = 'none'
+```
+- 中文标题示例：`ax.set_title('M1 与 FY1 三维轨迹')` 而非 `ax.set_title('3D Trajectory')`
+- 中文轴标签示例：`ax.set_xlabel('X 坐标 (m)')`、`ax.set_ylabel('Y 坐标 (m)')`
 """)
         return "\n".join(parts)
 
@@ -111,6 +123,7 @@ class CodingAgent(BaseAgent):
 - **所有字符串字面量必须写在同一行内，禁止跨行字符串**
 - **确保代码是语法正确的 Python，可直接运行**
 - **代码块中只输出纯 Python 代码，禁止在代码块内混入 shell 命令（如 python xxx.py、pip install 等），shell 命令放在代码块外**
+- **⚠️ 输出长度限制：代码总行数控制在 400 行以内，确保代码完整输出不被截断。如果代码超过 400 行，请精简注释和冗余代码**
 - 使用 ```python 代码块包裹完整代码
 
 只输出代码和运行说明，不要生成完整图表。"""
@@ -135,12 +148,22 @@ class CodingAgent(BaseAgent):
 
 请完成：
 1. 全量计算和参数扫描（敏感性分析）
-2. 生成三类图（原始数据图、过程图、结果图），每类至少3张，合计至少9张
+2. 生成三类图（原始数据图、过程图、结果图），每类至少1张，合计至少3张
 3. 每个子问题在三类图中各至少1张
 4. 生成结果表格
 5. 生成复现清单
 
 ## 重要规则
+
+### 中文显示（关键）
+- **所有图表的标题、轴标签、图例、注释必须使用中文**
+- **代码开头必须配置中文字体**：
+```python
+import matplotlib
+matplotlib.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
+matplotlib.rcParams['axes.unicode_minus'] = False
+matplotlib.rcParams['svg.fonttype'] = 'none'
+```
 
 ### 代码必须自包含
 - 所有代码放在一个文件里，不要跨文件 import 本项目其他模块
@@ -152,6 +175,12 @@ class CodingAgent(BaseAgent):
 - **所有字符串字面量必须写在同一行内，禁止跨行字符串**
 - **确保代码是语法正确的 Python，可直接运行**
 - **代码块中只输出纯 Python 代码，禁止在代码块内混入 shell 命令（如 python xxx.py、pip install 等），shell 命令放在代码块外**
+
+### ⚠️ 输出长度限制（关键）
+- **代码总行数控制在 600 行以内**，确保代码完整输出不被截断
+- 如果代码超过 600 行，请精简注释、合并重复逻辑、减少图表数量
+- **优先保证代码完整性和可执行性，而非图表数量**
+- 图表至少生成 3 张（轨迹图、过程图、结果图各1张），不要为了凑数而增加代码量
 
 ### 输出格式
 - 使用 ```python 代码块包裹完整代码
@@ -174,5 +203,8 @@ class CodingAgent(BaseAgent):
 ## 反馈
 {feedback}
 
-请修正代码并重新输出。"""
+请修正代码并重新输出。
+
+⚠️ 代码总行数控制在 600 行以内，确保完整输出不被截断。优先保证代码完整性。
+⚠️ 所有图表标题、轴标签、图例、注释必须使用中文，代码开头必须配置中文字体。"""
         return self.invoke(messages, user_input=user_msg)

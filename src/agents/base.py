@@ -79,6 +79,9 @@ class BaseAgent:
     def _check_stop() -> bool:
         try:
             import streamlit as st
+        except ImportError:
+            return False
+        try:
             return st.session_state.get("stop_requested", False)
         except Exception:
             return False

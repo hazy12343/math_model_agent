@@ -19,7 +19,7 @@ class AppConfig:
     llm_api_key: Optional[str] = None
     llm_base_url: Optional[str] = None
     temperature: float = 0.1
-    max_tokens: int = 8192
+    max_tokens: int = 16384
     max_retries: int = 3
     code_exec_timeout: int = 120
     subagents: dict = field(default_factory=lambda: {

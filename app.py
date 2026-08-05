@@ -49,7 +49,7 @@ if "workflow_state" not in st.session_state:
         "figure_files": [],
         "subagent_config": {},
         "error": None,
-        "retry_count": 0,
+        "retry_counts": {},
         "stage_output": "",
         "modeling_report": "",
         "terminology_table": "",
@@ -117,7 +117,7 @@ def _build_initial_state() -> dict:
         "pdf_paper": "",
         "subagent_config": st.session_state.config.subagents,
         "error": None,
-        "retry_count": 0,
+        "retry_counts": {},
         "stage_output": "",
         "user_input": "",
         "uploaded_files": st.session_state.workflow_state.get("problem_files", []),
@@ -239,8 +239,13 @@ def _save_outputs(outputs: dict):
     if "terminology_table" in outputs and outputs["terminology_table"]:
         tt = outputs["terminology_table"]
         report = outputs.get("modeling_report", "")
-        # 如果术语表格长度与报告接近，说明提取失败，走 fallback
-        if report and len(tt) < len(report) * 0.8:
+        if report:
+            tt_ratio = len(tt) / max(len(report), 1)
+            if tt_ratio < 0.8:
+                path = output_dir / "术语表格.md"
+                path.write_text(tt, encoding="utf-8")
+                st.session_state.output_files["terminology"] = str(path)
+        else:
             path = output_dir / "术语表格.md"
             path.write_text(tt, encoding="utf-8")
             st.session_state.output_files["terminology"] = str(path)

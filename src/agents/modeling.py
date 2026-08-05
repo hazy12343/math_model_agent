@@ -98,13 +98,15 @@ class ModelingAgent(BaseAgent):
             content = self._read_file(Path(f))
             file_contents.append(f"--- 文件：{f} ---\n{content[:3000]}")
 
+        file_contents_text = "\n".join(file_contents)
+
         user_msg = f"""请分析以下数学建模题目：
 
 ## 题目描述
 {problem_description}
 
 ## 附件内容
-{chr(10).join(file_contents)}
+{file_contents_text}
 
 请按照建模手的工作流程，完成以下任务：
 1. 理解题目和附件

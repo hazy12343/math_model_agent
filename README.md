@@ -330,7 +330,9 @@ LLM 生成的代码可能因上下文窗口截断导致语法错误。系统内�
 
 ## 📦 依赖安装
 
-### 核心依赖
+> ⚠️ **重要**：运行前必须先安装依赖！如果未安装 `numpy`、`matplotlib`、`scipy` 等核心库，Agent 生成的求解代码在运行时将报错（如 `ModuleNotFoundError`），导致代码执行失败、无法生成图表。
+
+### 第一步：安装核心依赖
 
 ```bash
 pip install -r requirements.txt
@@ -347,7 +349,7 @@ pip install -r requirements.txt
 | 可视化 | `matplotlib`, `seaborn` | 静态图表、统计图、中文显示 |
 | 文件处理 | `PyPDF2`, `python-docx` | PDF/Word 读写 |
 
-### 可选依赖（按需安装）
+### 第二步：安装可选依赖（按需）
 
 ```bash
 # 图论与网络分析

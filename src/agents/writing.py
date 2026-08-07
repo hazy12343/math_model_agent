@@ -122,10 +122,11 @@ class WritingAgent(BaseAgent):
         # 搜索相关参考文献
         references = ""
         try:
-            search_results = self.paper_search.search(
-                query="数学建模 烟幕 遮蔽 优化 无人机 遗传算法 网格搜索",
-                max_results=5
-            )
+            search_func = self.paper_search.search_tool
+            search_results = search_func.invoke({
+                "query": "数学建模 烟幕 遮蔽 优化 无人机 遗传算法 网格搜索",
+                "limit": 5
+            })
             if search_results:
                 references = "\n\n## 搜索到的参考文献\n\n" + str(search_results)[:2000]
         except Exception:

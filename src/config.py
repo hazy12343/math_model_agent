@@ -46,7 +46,7 @@ class AppConfig:
             model = os.getenv("LLM_MODEL", "deepseek-chat")
         else:
             api_key = os.getenv("OPENAI_API_KEY")
-            base_url = os.getenv("OPENAI_BASE_URL")
+            base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
             model = os.getenv("LLM_MODEL", "gpt-4o")
 
         return cls(

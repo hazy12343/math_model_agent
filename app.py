@@ -127,6 +127,21 @@ def _build_initial_state() -> dict:
 def _run_full_workflow():
     workflow = create_workflow(st.session_state.config)
     initial_state = _build_initial_state()
+    initial_state.update({
+        "problem_description": st.session_state.workflow_state.get("problem_description", ""),
+        "problem_files": st.session_state.workflow_state.get("problem_files", []),
+        "modeling_report": st.session_state.workflow_state.get("modeling_report", ""),
+        "terminology_table": st.session_state.workflow_state.get("terminology_table", ""),
+        "code_exec_output": st.session_state.workflow_state.get("code_exec_output", ""),
+        "evidence_outline": st.session_state.workflow_state.get("evidence_outline", ""),
+        "messages": st.session_state.workflow_state.get("messages", []),
+        "current_stage": "init",
+        "competition": st.session_state.workflow_state.get("competition", "cumcm"),
+        "language": st.session_state.workflow_state.get("language", "chinese"),
+        "project_root": st.session_state.workflow_state.get("project_root", str(st.session_state.config.project_root)),
+        "skill_root": st.session_state.workflow_state.get("skill_root", str(st.session_state.config.skill_root)),
+        "subagent_config": st.session_state.workflow_state.get("subagent_config", {}),
+    })
 
     outputs = {"_stage": "full"}
     config_ = {"configurable": {"thread_id": "main"}}
@@ -197,6 +212,20 @@ def _run_full_workflow():
 def _run_single_stage(stage: str):
     workflow = create_single_stage_workflow(st.session_state.config, stage)
     initial_state = _build_initial_state()
+    initial_state.update({
+        "problem_description": st.session_state.workflow_state.get("problem_description", ""),
+        "problem_files": st.session_state.workflow_state.get("problem_files", []),
+        "modeling_report": st.session_state.workflow_state.get("modeling_report", ""),
+        "terminology_table": st.session_state.workflow_state.get("terminology_table", ""),
+        "code_exec_output": st.session_state.workflow_state.get("code_exec_output", ""),
+        "evidence_outline": st.session_state.workflow_state.get("evidence_outline", ""),
+        "messages": st.session_state.workflow_state.get("messages", []),
+        "current_stage": stage,
+        "competition": st.session_state.workflow_state.get("competition", "cumcm"),
+        "language": st.session_state.workflow_state.get("language", "chinese"),
+        "project_root": st.session_state.workflow_state.get("project_root", str(st.session_state.config.project_root)),
+        "skill_root": st.session_state.workflow_state.get("skill_root", str(st.session_state.config.skill_root)),
+    })
 
     outputs = {"_stage": stage}
     config_ = {"configurable": {"thread_id": f"{stage}_only"}}
@@ -415,7 +444,6 @@ def _run_chat(user_input: str):
     print(f"\n{'='*60}", file=sys.stderr, flush=True)
     print(f"  [Chat] 完成\n", file=sys.stderr, flush=True)
 
-    st.session_state.messages.append({"role": "user", "content": user_input})
     st.session_state.messages.append({"role": "assistant", "content": response_text})
     st.session_state.stop_requested = False
     st.rerun()

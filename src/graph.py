@@ -1357,7 +1357,7 @@ def create_workflow(config: AppConfig):
         # 提取网格搜索步长信息
         grid_step = ""
         for line in raw_exec.split("\n"):
-            if "步长" in line or "步长" in line.lower():
+            if "步长" in line or "step" in line.lower():
                 grid_step = line.strip()
                 break
 
@@ -1504,7 +1504,8 @@ def create_workflow(config: AppConfig):
 5. 确保语言学术化、简洁化
 
 输出润色后的完整论文。"""
-            polished_content = writing.invoke(messages, user_input=supplement_prompt)
+            writing_prompt = writing.load_system_prompt().replace("{project_root}", str(config.project_root))
+            polished_content = writing.invoke(messages, user_input=supplement_prompt, system_prompt=writing_prompt)
             polish_text += f"\n\n### 2. LLM 润色结果\n\n"
             polish_text += polished_content[:5000] + "\n\n..."
             polish_text += "\n\n---\n✅ 论文润色完成。润色后的论文已更新到 `paper_output` 字段。\n"
@@ -1835,7 +1836,11 @@ def create_single_stage_workflow(config: AppConfig, stage: str):
         elif stage == "writing":
             evidence_outline = state.get("evidence_outline", "")
             code_results = state.get("code_exec_output", "")
-            result = writing.write_paper(modeling_report, code_results, "", evidence_outline, messages, project_root)
+            figure_files = state.get("figure_files", [])
+            figure_list = ""
+            if figure_files:
+                figure_list = "\n".join(f"  - {Path(f).name}" for f in figure_files)
+            result = writing.write_paper(modeling_report, code_results, figure_list, evidence_outline, messages, project_root)
             return {
                 "current_stage": "done",
                 "paper_output": result,

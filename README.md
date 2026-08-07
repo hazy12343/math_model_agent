@@ -9,7 +9,7 @@
 [![LangGraph](https://img.shields.io/badge/LangGraph-0.2+-orange.svg)](https://github.com/langchain-ai/langgraph)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.35+-red.svg)](https://streamlit.io)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Last Updated](https://img.shields.io/badge/Last%20Updated-2025.08-brightgreen.svg)]()
+[![Last Updated](https://img.shields.io/badge/Last%20Updated-2025.08.07-brightgreen.svg)]()
 
 </div>
 
@@ -371,6 +371,18 @@ math-model-agent/
 ---
 
 ## 🆕 更新日志
+
+### 2025.08.07 — 全面 Bug 修复（共 7 项）
+
+| 类别 | 变更内容 |
+|------|---------|
+| 🐛 **Bug 修复** | 修复 `writing.py` 中 `paper_search.search()` 方法不存在（应使用 `search_tool`） |
+| 🐛 **Bug 修复** | 修复 `config.py` 中 OpenAI provider 的 `base_url` 缺少默认值导致 `None` 传入 `ChatOpenAI` |
+| 🐛 **Bug 修复** | 修复 `graph.py` 中 `polish_node` 调用 `writing.invoke()` 缺少 `system_prompt` 参数 |
+| 🐛 **Bug 修复** | 修复 `app.py` 中聊天消息被重复添加到 `st.session_state.messages` |
+| 🐛 **Bug 修复** | 修复 `graph.py` 中 `"步长" in line.lower()` 冗余检查，改为 `"step" in line.lower()` |
+| 🐛 **Bug 修复** | 修复 `app.py` 中 `_run_full_workflow` / `_run_single_stage` 未继承用户输入的题目描述和文件 |
+| 🐛 **Bug 修复** | 修复 `graph.py` 中单阶段写作模式下 `figure_list` 被硬编码为空字符串 |
 
 ### 2025.08 — Bug 修复与质量改进
 

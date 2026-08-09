@@ -21,12 +21,15 @@ class AppConfig:
     temperature: float = 0.1
     max_tokens: int = 16384
     max_retries: int = 3
-    code_exec_timeout: int = 120
+    code_exec_timeout: int = 300
     enable_verification: bool = True
-    enable_multi_model_compare: bool = False
+    enable_multi_model_compare: bool = True
     enable_trap_detection: bool = True
     enable_innovation_guidance: bool = True
     enable_national_competition_mode: bool = False
+    min_figure_count: int = 8
+    min_algorithm_count: int = 2
+    auto_syntax_repair: bool = True
     subagents: dict = field(default_factory=lambda: {
         "official_rules": False,
         "attachment_inventory": False,
@@ -56,7 +59,7 @@ class AppConfig:
             llm_base_url=base_url,
             competition=os.getenv("COMPETITION", "cumcm"),
             language=os.getenv("LANGUAGE", "chinese"),
-            temperature=float(os.getenv("TEMPERATURE", "0.1")),
+            temperature=float(os.getenv("TEMPERATURE", "0.1") or "0.1"),
         )
 
     def ensure_project_root(self) -> Path:

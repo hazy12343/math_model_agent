@@ -46,10 +46,32 @@ class WritingAgent(BaseAgent):
 
 # 重要规则
 - 所有结论必须有真实数据支撑
-- 图表必须来自实际代码输出
+- 图表必须来自实际代码输出，并在正文中引用（如"如图1所示"、"见表2"）
 - 引用必须可追溯
 - 两种格式论文内容必须一致
 - 默认至少8幅正式图
+- **⚠️ 如果代码执行结果中包含"代码执行失败"或"严重警告"标记，说明代码未成功运行，此时论文中绝对不能编造任何数值！应如实说明代码执行状态，等待代码修复后重新生成论文。**
+
+# 图表引用强制要求（国赛关键）
+- **论文中每张图、每个表必须在正文中被至少引用一次**
+- 引用格式：如图1所示、见表2、图3展示了...、从表4可以看出...
+- 生成论文后，必须自检：列出所有图表，确认每个图表都在正文中有引用
+- 如果图表未被引用，必须删除或添加引用文字
+- 图表编号必须连续（图1、图2、图3...），不能跳号
+
+# 论文章节结构强制要求（国赛关键）
+- 论文必须包含以下标准章节（顺序不可变）：
+  1. 摘要（含关键词）
+  2. 问题重述与分析
+  3. 模型假设与符号说明
+  4. 模型建立（核心章节，含公式推导、模型对比、创新点标注）
+  5. 模型求解（核心章节，含算法描述、求解结果、收敛性分析）
+  6. 结果分析（含敏感性分析、误差分析、模型对比分析）
+  7. 模型评价与改进（优点、缺点、改进方向）
+  8. 结论
+  9. 参考文献（至少5篇）
+- 如果缺少任何章节，标记为不合格
+- 摘要中必须包含：问题背景、建模方法、主要结果（具体数值）、创新点、关键词
 
 # 论文创新要求（关键）
 - 在"模型建立"部分明确标注每个创新点，并说明创新来源（模型简化/算法改进/问题转化/多目标权衡）
@@ -119,12 +141,25 @@ class WritingAgent(BaseAgent):
     ) -> str:
         prompt = self.load_system_prompt().replace("{project_root}", project_root)
 
-        # 搜索相关参考文献
+        # 搜索相关参考文献（基于题目内容动态生成搜索词）
         references = ""
         try:
+            # 从建模报告中提取关键主题词（取前100个字符中的关键词）
+            topic_keywords = []
+            report_lower = modeling_report.lower()
+            for kw in ["优化", "预测", "分类", "聚类", "评价", "调度", "路径", "规划",
+                        "optimization", "prediction", "classification", "clustering",
+                        "scheduling", "routing", "planning", "仿真", "simulation",
+                        "无人机", "车辆", "信号", "图像", "网络", "资源", "调度",
+                        "uav", "drone", "vehicle", "signal", "image", "network"]:
+                if kw in report_lower:
+                    topic_keywords.append(kw)
+            if not topic_keywords:
+                topic_keywords = ["数学建模", "优化"]
+            search_query = "数学建模 " + " ".join(topic_keywords[:5])
             search_func = self.paper_search.search_tool
             search_results = search_func.invoke({
-                "query": "数学建模 烟幕 遮蔽 优化 无人机 遗传算法 网格搜索",
+                "query": search_query,
                 "limit": 5
             })
             if search_results:
@@ -138,7 +173,7 @@ class WritingAgent(BaseAgent):
 {modeling_report[:5000]}
 
 ## 代码结果
-{code_results[:5000] if code_results else '（代码尚未成功运行，请在论文中用"待计算"标注数值结果，但仍需完成论文的全部结构和推导）'}
+{code_results[:5000] if code_results else '（代码尚未成功运行，请生成完整的论文结构和推导，但**不得在结果表中填入任何数值（包括"待计算"），直接留空或标注"见代码输出"即可**）'}
 
 ## 图表清单
 {figure_list[:3000]}
@@ -154,7 +189,7 @@ class WritingAgent(BaseAgent):
 3. 生成 LaTeX 源码
 4. 确保两种格式内容一致
 
-**重要**：如果代码结果不可用，请在数值位置标注"待计算"并注明"结果将在代码运行后填入"，但论文的模型推导、公式、算法步骤必须完整。
+**重要**：如果代码结果上方有"严重警告"标记，说明代码未执行成功，此时论文中绝对不能编造任何数值，结果表格保留结构但数值列留空。如果代码结果可用，则如实填入数值。
 **参考文献**：论文结尾必须包含参考文献列表，至少 5 篇。使用搜索到的参考文献和标准教材作为引用来源。"""
         return self.invoke(messages, user_input=user_msg, system_prompt=prompt)
 

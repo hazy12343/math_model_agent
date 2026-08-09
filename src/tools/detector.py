@@ -205,9 +205,9 @@ class TrapDetector:
 
         # 1. 检测所有结果全为 0
         zero_patterns = [
-            r'最优[值解].*?[=:]\s*0\.?0?\s*[秒s]',
-            r'[=:]\s*0\.0+\s*[秒s]',
-            r'全部为0',
+            r'最优[值解].*?[=:]\s*0\.?0?',
+            r'[=:]\s*0\.0+',
+            r'全部为\s*0',
         ]
         zero_count = 0
         for pat in zero_patterns:

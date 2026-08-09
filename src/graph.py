@@ -527,9 +527,9 @@ def _check_result_plausibility(output: str, code: str, problem: str) -> List[str
 
     # 1. 检测算法是否全部返回 0
     zero_patterns = [
-        r'最优[值解].*?[=:]\s*0\.?0?\s*[秒s]',
-        r'[=:]\s*0\.0+\s*[秒s]',
-        r'全部为0',
+        r'最优[值解].*?[=:]\s*0\.?0?',
+        r'[=:]\s*0\.0+',
+        r'全部为\s*0',
         r'最优.*?0\.0+',
     ]
     for pat in zero_patterns:
@@ -569,6 +569,58 @@ def _check_result_plausibility(output: str, code: str, problem: str) -> List[str
     if nan_in_output:
         warnings.append("P0-数值异常: 结果输出中包含 NaN/Inf 值，代码可能存在除零或数值溢出")
 
+    # 7. 检测资源利用率
+    # 检查常见资源浪费模式（通用化：检查是否明确说明了资源使用情况）
+    if "仅使用" in output or "未使用" in output or "剩余" in output:
+        pass  # 已明确说明，不算警告
+    else:
+        # 通用资源利用率检测：查找 "可用 X，实际 Y" 模式
+        resource_patterns = [
+            (r'可用\s*(\d+\.?\d*).*?实际\s*(\d+\.?\d*)', "资源利用不足"),
+            (r'(\d+\.?\d*)\s*个.*?使用\s*(\d+\.?\d*)\s*个', "资源利用不足"),
+        ]
+        for pat, desc in resource_patterns:
+            match = re.search(pat, output)
+            if match:
+                try:
+                    available = float(match.group(1))
+                    used = float(match.group(2))
+                    if available > 0 and used < available:
+                        warnings.append(f"P1-{desc}: 可用 {available}，实际使用 {used}，资源利用率仅 {used/available*100:.0f}%")
+                except (ValueError, ZeroDivisionError):
+                    pass
+
+    # 8. 检测搜索精度是否足够（检查搜索结果是否远低于理论最大值）
+    # 通用模式：匹配 "理论最大/上限" vs "实际/最优结果" 的数值对比
+    theoretical_max_patterns = [
+        (r'理论[最大上限].*?(\d+\.?\d*)', r'(?:总|实际|最优).*?(\d+\.?\d*)'),
+        (r'最优.*?上限.*?(\d+\.?\d*)', r'实际.*?(\d+\.?\d*)'),
+        (r'(?:upper.bound|理论|最大).*?(\d+\.?\d*)', r'(?:result|结果|实际|最优).*?(\d+\.?\d*)'),
+    ]
+    for theory_pat, actual_pat in theoretical_max_patterns:
+        theory_match = re.search(theory_pat, output, re.IGNORECASE)
+        actual_match = re.search(actual_pat, output, re.IGNORECASE)
+        if theory_match and actual_match:
+            theory_max = float(theory_match.group(1))
+            actual = float(actual_match.group(1))
+            if theory_max > 0 and actual / theory_max < 0.1:
+                warnings.append(f"P0-结果质量过低: 实际结果({actual})仅为理论最大值({theory_max})的 {actual/theory_max*100:.1f}%，搜索精度可能严重不足")
+
+    # 9. 检测"未收敛"状态
+    unconverged_patterns = [r'未收敛', r'not converged', r'未找到有效解', r'全部为\s*0']
+    for pat in unconverged_patterns:
+        if re.search(pat, output, re.IGNORECASE):
+            warnings.append("P0-算法未收敛: 迭代算法未收敛或未找到有效解，需要调整算法参数或约束处理方式")
+            break
+
+    # 10. 检测是否有结果但过于粗糙
+    # 如果搜索点数 < 200 且搜索空间 > 1000，给出警告
+    search_points_match = re.search(r'(\d+)\s*个点', output)
+    if search_points_match:
+        points = int(search_points_match.group(1))
+        if points < 200:
+            warnings.append(f"P1-搜索精度: 仅使用 {points} 个搜索点，建议增加搜索点数以提高精度")
+
     return warnings
 
 
@@ -579,10 +631,10 @@ def _extract_comparison_table(output: str) -> str:
     in_table = False
     table_count = 0
     for i, line in enumerate(lines):
-        # 检测表头行（包含算法/方法+结果/精度/耗时等关键词）
-        if re.search(r'\|?\s*(算法|方法|Method|Algorithm)\s*\|', line, re.IGNORECASE):
+        # 检测表头行（包含算法/方法/模型+结果/精度/耗时等关键词）
+        if re.search(r'\|?\s*(算法|方法|模型|Method|Algorithm|Model)\s*\|', line, re.IGNORECASE):
             # 检查是否包含结果/精度/耗时等列
-            if re.search(r'(结果|精度|耗时|稳定性|收敛|误差|时间|score|time|accuracy)', line, re.IGNORECASE):
+            if re.search(r'(结果|精度|耗时|稳定性|收敛|误差|时间|最优值|score|time|accuracy|result)', line, re.IGNORECASE):
                 in_table = True
                 table_lines.append(f"\n--- 对比表 {table_count + 1} ---")
                 table_lines.append(line)
@@ -677,6 +729,8 @@ def create_workflow(config: AppConfig):
             "code_files": state.get("code_files", []),
             "result_files": state.get("result_files", []),
             "figure_files": state.get("figure_files", []),
+            "code_exec_success": False,
+            "exec_error": None,
             "stage_output": "✅ 初始化完成，准备开始建模分析。",
         }
 
@@ -749,7 +803,12 @@ def create_workflow(config: AppConfig):
         status = _parse_quality_status(result)
         is_pass = status == "PASS"
         quality_gates = dict(state.get("quality_gates", {}))
-        quality_gates["M1"] = status if status != "UNKNOWN" else ("PASS" if is_pass else "FAIL")
+        if is_pass:
+            quality_gates["M1"] = "PASS"
+        elif status == "BLOCKED":
+            quality_gates["M1"] = "BLOCKED"
+        else:
+            quality_gates["M1"] = "FAIL"
         retry_counts = dict(state.get("retry_counts", {}))
         if not is_pass:
             retry_counts["M1"] = retry_counts.get("M1", 0) + 1
@@ -848,7 +907,12 @@ def create_workflow(config: AppConfig):
         status = _parse_quality_status(result)
         is_pass = status == "PASS"
         quality_gates = dict(state.get("quality_gates", {}))
-        quality_gates["P1"] = status if status != "UNKNOWN" else ("PASS" if is_pass else "FAIL")
+        if is_pass:
+            quality_gates["P1"] = "PASS"
+        elif status == "BLOCKED":
+            quality_gates["P1"] = "BLOCKED"
+        else:
+            quality_gates["P1"] = "FAIL"
         retry_counts = dict(state.get("retry_counts", {}))
         if not is_pass:
             retry_counts["P1"] = retry_counts.get("P1", 0) + 1
@@ -906,6 +970,8 @@ def create_workflow(config: AppConfig):
                 "stage_history": state.get("stage_history", []) + ["code_exec"],
                 "code_exec_output": "⚠️ 未能从输出中提取代码",
                 "stage_output": state.get("stage_output", ""),
+                "code_exec_success": False,
+                "exec_error": "未能从输出中提取代码",
                 "error": None,
             }
 
@@ -952,6 +1018,8 @@ def create_workflow(config: AppConfig):
                             f"可能原因：LLM 输出被截断，代码末尾不完整。请检查 max_tokens 配置。"
                         ),
                         "stage_output": state.get("stage_output", ""),
+                        "code_exec_success": False,
+                        "exec_error": f"代码语法错误（修复失败）: {syntax_err}",
                         "error": "代码语法错误",
                     }
 
@@ -1020,42 +1088,77 @@ def create_workflow(config: AppConfig):
                     output += f"\n\n[生成结果文件: {len(result_files)} 个]"
 
                 if result.returncode == 0:
-                    # 执行成功
                     final_output = output
                     final_figure_files = figure_files
                     final_result_files = result_files
                     final_code_files = code_files
                     exec_success = True
-                    shutil.rmtree(exec_dir, ignore_errors=True)
                     break
                 else:
-                    # 执行失败，尝试多轮修复
                     if debug_round < MAX_DEBUG_ROUNDS - 1:
                         debug_feedback = f"代码执行失败（第 {debug_round + 1} 轮），错误信息:\n{output[:3000]}"
+                        fix_success = False
                         try:
                             fixed_code = _extract_code_from_output(
                                 coding.fix_code(debug_feedback, state.get("messages", []), state.get("project_root", str(config.project_root)))
                             )
                             if fixed_code.strip():
                                 code_file = _inject_chinese_font(fixed_code)
+                                fix_success = True
                                 debug_round += 1
                                 continue
-                        except Exception:
-                            pass
-                        # 如果修复失败（code_file为空或异常），使用原始代码继续下一轮
-                        # 但避免写入空文件
-                        if not code_file.strip():
-                            code_file = _extract_code_from_output(state.get("stage_output", ""))
-                    # 最后一次尝试或修复失败，保留当前输出
+                        except Exception as e:
+                            output += f"\n\n[修复异常: {e}]"
+                        if not fix_success:
+                            output += "\n\n[代码修复失败，跳过重试]"
+                            final_output = output
+                            final_figure_files = figure_files
+                            final_result_files = result_files
+                            final_code_files = code_files
+                            break
                     final_output = output
                     final_figure_files = figure_files
                     final_result_files = result_files
                     final_code_files = code_files
 
             except subprocess.TimeoutExpired:
-                final_output = f"⏱️ 代码执行超时（{config.code_exec_timeout}秒）"
+                # 分析代码特征，给出针对性修复建议
+                code_lines = code_file.split("\n")
+                nested_loop_count = len([l for l in code_lines if l.strip().startswith("for ")])
+                has_meshgrid = "meshgrid" in code_file
+                time_step_match = re.search(r'TIME_STEP\s*=\s*(\d+\.?\d*)', code_file)
+                time_step = float(time_step_match.group(1)) if time_step_match else None
+                de_match = re.search(r'differential_evolution\(.*?maxiter\s*=\s*(\d+)', code_file, re.DOTALL)
+                de_maxiter = int(de_match.group(1)) if de_match else None
+                de_pop_match = re.search(r'differential_evolution\(.*?popsize\s*=\s*(\d+)', code_file, re.DOTALL)
+                de_popsize = int(de_pop_match.group(1)) if de_pop_match else None
+
+                diag_parts = []
+                if nested_loop_count > 3:
+                    diag_parts.append(f"  - 检测到 {nested_loop_count} 层 for 循环，建议用 np.meshgrid() 向量化替代")
+                if time_step and time_step < 0.2:
+                    diag_parts.append(f"  - 时间步长 TIME_STEP={time_step}s 过小，建议改为 ≥ 0.5s")
+                if de_maxiter and de_maxiter > 30:
+                    diag_parts.append(f"  - 差分进化 maxiter={de_maxiter} 过大，建议 ≤ 20")
+                if de_popsize and de_popsize > 10:
+                    diag_parts.append(f"  - 差分进化 popsize={de_popsize} 过大，建议 ≤ 8")
+                if not diag_parts:
+                    diag_parts.append("  - 可能存在死循环或无限递归，请检查 while 循环终止条件")
+
+                diag_text = "\n".join(diag_parts)
+                final_output = (
+                    f"⏱️ 代码执行超时（{config.code_exec_timeout}秒）\n\n"
+                    f"### 超时诊断\n{diag_text}\n\n"
+                    f"### 修复建议\n"
+                    f"1. 将嵌套 for 循环替换为向量化运算\n"
+                    f"2. 增大时间步长（≥ 0.5s）\n"
+                    f"3. 减少差分进化迭代次数（maxiter ≤ 20, popsize ≤ 8）\n"
+                    f"4. 减少粗搜索总组合数（≤ 3000）\n"
+                )
+                break
             except Exception as e:
                 final_output = f"❌ 代码执行失败: {e}"
+                break
             finally:
                 shutil.rmtree(exec_dir, ignore_errors=True)
             debug_round += 1
@@ -1078,6 +1181,8 @@ def create_workflow(config: AppConfig):
             "figure_files": final_figure_files,
             "result_files": final_result_files,
             "code_files": final_code_files,
+            "code_exec_success": exec_success,
+            "exec_error": None if exec_success else (final_output[:500] if final_output else "代码执行失败"),
             "error": None,
         }
 
@@ -1112,6 +1217,8 @@ def create_workflow(config: AppConfig):
                 "raw_exec_output": raw_exec,
                 "verification_output": "[数值验证已禁用]",
                 "stage_output": state.get("stage_output", ""),
+                "code_exec_success": state.get("code_exec_success", False),
+                "exec_error": state.get("exec_error"),
                 "error": None,
             }
 
@@ -1203,6 +1310,8 @@ def create_workflow(config: AppConfig):
             "raw_exec_output": raw_exec,
             "verification_output": verify_text,
             "stage_output": state.get("stage_output", ""),
+            "code_exec_success": state.get("code_exec_success", False),
+            "exec_error": state.get("exec_error"),
             "error": None if not has_p0 else "数值验证发现P0级错误",
         }
 
@@ -1239,42 +1348,70 @@ def create_workflow(config: AppConfig):
             # 从执行结果中提取数值对比
             comparison_text += "### 定量对比分析\n\n"
 
-            # 用正则从输出中提取最优值
+            # 用正则从输出中提取最优值（同时匹配中英文算法名）
+            algo_patterns = [
+                ("网格搜索", ["网格搜索", "grid search", "grid_search"]),
+                ("遗传算法", ["遗传算法", "genetic algorithm", "genetic"]),
+                ("粒子群", ["粒子群", "particle swarm", "pso"]),
+                ("模拟退火", ["模拟退火", "simulated annealing", "simulated_annealing"]),
+                ("梯度下降", ["梯度下降", "gradient descent", "gradient"]),
+                ("坐标下降", ["坐标下降", "coordinate descent", "coordinate"]),
+                ("穷举法", ["穷举", "暴力", "brute force", "brute"]),
+                ("随机搜索", ["随机搜索", "random search", "random"]),
+            ]
             best_values = {}
-            # 尝试匹配 "网格搜索: X.XX s" 或 "网格搜索最优值: X.XX"
-            for algo_name, algo_key in [("网格搜索", "网格搜索"), ("遗传算法", "遗传算法"),
-                                         ("粒子群", "粒子群"), ("模拟退火", "模拟退火")]:
-                patterns = [
-                    rf'{algo_key}.*?[：:]\s*(\d+\.?\d*)\s*[秒s]',
-                    rf'{algo_key}.*?最优[值解].*?[=:]\s*(\d+\.?\d*)',
-                    rf'{algo_key}.*?结果[：:]\s*(\d+\.?\d*)',
-                ]
-                for pat in patterns:
-                    m = re.search(pat, raw_exec)
-                    if m:
-                        best_values[algo_name] = float(m.group(1))
+            for algo_name, algo_keys in algo_patterns:
+                for algo_key in algo_keys:
+                    patterns = [
+                        rf'{re.escape(algo_key)}.*?[：:]\s*(\d+\.?\d*)\s*[秒s]',
+                        rf'{re.escape(algo_key)}.*?最优[值解].*?[=:]\s*(\d+\.?\d*)',
+                        rf'{re.escape(algo_key)}.*?结果[：:]\s*(\d+\.?\d*)',
+                    ]
+                    found = False
+                    for pat in patterns:
+                        m = re.search(pat, raw_exec, re.IGNORECASE)
+                        if m:
+                            best_values[algo_name] = float(m.group(1))
+                            found = True
+                            break
+                    if found:
                         break
 
             if best_values:
-                comparison_text += "| 指标 | 网格搜索 | 遗传算法 | 差异 |\n"
-                comparison_text += "|------|----------|----------|------|\n"
-                for name, val in best_values.items():
-                    comparison_text += f"| {name} 最优结果 | {val:.4f} s | - | - |\n"
+                algo_names = list(best_values.keys())
+                # 动态生成表头
+                header_cols = "| 指标 |" + "|".join(f" {n} |" for n in algo_names)
+                if len(algo_names) >= 2:
+                    header_cols += " 差异 |"
+                comparison_text += header_cols + "\n"
+                sep_cols = "|------|" + "|".join("------|" for _ in algo_names)
+                if len(algo_names) >= 2:
+                    sep_cols += "------|"
+                comparison_text += sep_cols + "\n"
+                comparison_text += "| 最优结果 |" + "".join(f" {v:.4f} s |" for v in best_values.values())
+                if len(algo_names) >= 2:
+                    vals = list(best_values.values())
+                    diff = abs(vals[0] - vals[1])
+                    comparison_text += f" {diff:.4f} s |"
+                comparison_text += "\n"
                 if len(best_values) >= 2:
                     vals = list(best_values.values())
                     diff = abs(vals[0] - vals[1])
-                    comparison_text += f"| 算法间差异 | - | - | {diff:.4f} s |\n"
-                    if diff < 0.01 * max(vals):
-                        comparison_text += "| **结论** | **结果一致，解可靠** | | |\n"
+                    nonzero_vals = [abs(v) for v in vals if v != 0]
+                    if nonzero_vals:
+                        if diff < 0.01 * max(nonzero_vals):
+                            comparison_text += "| **结论** | **结果一致，解可靠** |\n"
+                        else:
+                            comparison_text += "| **结论** | **结果差异较大，需进一步分析原因** |\n"
                     else:
-                        comparison_text += "| **结论** | **结果差异较大，需进一步分析原因** | | |\n"
+                        comparison_text += "| **结论** | **所有算法结果均为0，可能存在算法实现问题** |\n"
             else:
                 comparison_text += "（未能从执行输出中自动提取定量对比数据，请查看下方原始输出）\n\n"
                 # 尝试从原始文本中提取更多数值信息
                 for line in raw_exec.split("\n"):
                     if re.search(r'\d+\.\d+', line) and any(kw in line.lower() for kw in ["最优", "最佳", "结果", "解"]):
                         comparison_text += f"- 原始输出: `{line.strip()}`\n"
-                if "0.00" in raw_exec and "遗传算法" in raw_exec:
+                if "0.00" in raw_exec and any(kw in raw_exec for kw in ["遗传算法", "genetic"]):
                     comparison_text += "\n⚠️ 遗传算法返回 0.00，可能存在约束处理问题\n"
                     comparison_text += "💡 建议：使用惩罚函数法处理约束，或调整变异/交叉算子\n"
         else:
@@ -1289,6 +1426,8 @@ def create_workflow(config: AppConfig):
             "model_comparison": comparison_text,
             "code_exec_output": exec_output + f"\n\n[模型对比]\n{comparison_text}",
             "stage_output": state.get("stage_output", ""),
+            "code_exec_success": state.get("code_exec_success", False),
+            "exec_error": state.get("exec_error"),
             "error": None,
         }
 
@@ -1299,6 +1438,40 @@ def create_workflow(config: AppConfig):
         verification_output = state.get("verification_output", "")
         problem = state.get("problem_description", "")
         messages = state.get("messages", [])
+        code_exec_success = state.get("code_exec_success", False)
+        exec_error = state.get("exec_error", "")
+
+        # 如果代码执行失败，不生成详细分析，只记录失败原因
+        if not code_exec_success:
+            error_text = "\n".join([
+                "## 误差分析报告",
+                "",
+                f"### ⚠️ 代码执行失败，无法生成误差分析",
+                "",
+                f"**执行状态**: 失败",
+                f"**错误信息**: {exec_error or '未知错误'}",
+                "",
+                "由于代码未成功执行，没有可用的数值结果来进行误差分析。",
+                "请修复代码后重新运行。",
+                "",
+                "### 常见超时原因排查",
+                "",
+                "1. **嵌套循环过多**: 检查是否存在多层嵌套循环（如 4 层参数扫描），建议使用向量化运算",
+                "2. **搜索精度过高**: 检查搜索步长是否过小，建议先用粗搜索定位再用细搜索精化",
+                "3. **差分进化迭代过多**: popsize × maxiter 过大，建议 popsize=8~15, maxiter=20~50",
+                "4. **时间步长过小**: TIME_STEP=0.1s 对于 70s 时间窗口产生 700 步/次，建议增大到 0.2~0.5s",
+                "5. **未使用向量化**: 检查是否用 Python 循环代替 NumPy 向量化操作",
+            ])
+            return {
+                "current_stage": "error_analysis",
+                "stage_history": state.get("stage_history", []) + ["error_analysis"],
+                "error_analysis": error_text,
+                "code_exec_output": exec_output + f"\n\n[误差分析]\n{error_text}",
+                "stage_output": state.get("stage_output", ""),
+                "code_exec_success": False,
+                "exec_error": exec_error,
+                "error": None,
+            }
 
         # 尝试使用 LLM 生成针对性的误差分析
         llm_analysis = ""
@@ -1418,6 +1591,8 @@ def create_workflow(config: AppConfig):
             "error_analysis": error_text,
             "code_exec_output": exec_output + f"\n\n[误差分析]\n{error_text}",
             "stage_output": state.get("stage_output", ""),
+            "code_exec_success": state.get("code_exec_success", False),
+            "exec_error": state.get("exec_error"),
             "error": None,
         }
 
@@ -1431,6 +1606,8 @@ def create_workflow(config: AppConfig):
         verification_output = state.get("verification_output", "")
         error_analysis = state.get("error_analysis", "")
         model_comparison = state.get("model_comparison", "")
+        code_exec_success = state.get("code_exec_success", False)
+        exec_error = state.get("exec_error", "")
 
         # 1. 格式检查（本地执行）
         polish_text = "\n".join([
@@ -1439,6 +1616,10 @@ def create_workflow(config: AppConfig):
             "### 1. 格式检查",
             "",
         ])
+
+        if not code_exec_success:
+            polish_text += f"\n⚠️ **严重警告**：代码执行失败，论文中的数值可能是 LLM 幻觉，不可信！\n"
+            polish_text += f"执行错误: {exec_error or '未知'}\n"
 
         # 检查公式编号
         formula_count = len(re.findall(r'\\tag\{|\\(\\d+\\)|\(\\d+\)', paper))
@@ -1474,9 +1655,10 @@ def create_workflow(config: AppConfig):
         if paper.strip().endswith("...") or paper.strip().endswith("……"):
             polish_text += "\n⚠️ 论文结尾疑似被截断，建议检查输出长度\n"
 
-        # 2. 调用 LLM 进行实际润色（补充论文内容）
-        try:
-            supplement_prompt = f"""请对以下数学建模论文进行润色和内容补充。
+        # 2. 调用 LLM 进行实际润色（仅在代码执行成功时）
+        if code_exec_success:
+            try:
+                supplement_prompt = f"""请对以下数学建模论文进行润色和内容补充。
 
 ## 题目
 {problem[:2000]}
@@ -1504,15 +1686,16 @@ def create_workflow(config: AppConfig):
 5. 确保语言学术化、简洁化
 
 输出润色后的完整论文。"""
-            writing_prompt = writing.load_system_prompt().replace("{project_root}", str(config.project_root))
-            polished_content = writing.invoke(messages, user_input=supplement_prompt, system_prompt=writing_prompt)
-            polish_text += f"\n\n### 2. LLM 润色结果\n\n"
-            polish_text += polished_content[:5000] + "\n\n..."
-            polish_text += "\n\n---\n✅ 论文润色完成。润色后的论文已更新到 `paper_output` 字段。\n"
-            # 将润色后的完整论文更新到 paper_output
-            paper = polished_content
-        except Exception as e:
-            polish_text += f"\n\n### 2. LLM 润色\n\n（LLM 润色不可用: {e}，保留原始论文）\n"
+                writing_prompt = writing.load_system_prompt().replace("{project_root}", str(config.project_root))
+                polished_content = writing.invoke(messages, user_input=supplement_prompt, system_prompt=writing_prompt)
+                polish_text += f"\n\n### 2. LLM 润色结果\n\n"
+                polish_text += polished_content[:5000] + "\n\n..."
+                polish_text += "\n\n---\n✅ 论文润色完成。润色后的论文已更新到 `paper_output` 字段。\n"
+                paper = polished_content
+            except Exception as e:
+                polish_text += f"\n\n### 2. LLM 润色\n\n（LLM 润色不可用: {e}，保留原始论文）\n"
+        else:
+            polish_text += "\n\n### 2. LLM 润色\n\n⚠️ 代码执行失败，跳过 LLM 润色，避免引入幻觉数据。保留原始论文。\n"
 
         return {
             "current_stage": "polish",
@@ -1545,8 +1728,17 @@ def create_workflow(config: AppConfig):
 
         status = _parse_quality_status(result)
         is_pass = status == "PASS"
+        code_exec_success = state.get("code_exec_success", False)
+        if not code_exec_success and is_pass:
+            result += "\n\n[P2 自动覆盖] 代码执行失败（非零退出码/异常），P2 自动判定为 FAIL。请修复代码后重试。"
+            is_pass = False
         quality_gates = dict(state.get("quality_gates", {}))
-        quality_gates["P2"] = status if status != "UNKNOWN" else ("PASS" if is_pass else "FAIL")
+        if is_pass:
+            quality_gates["P2"] = "PASS"
+        elif status == "BLOCKED":
+            quality_gates["P2"] = "BLOCKED"
+        else:
+            quality_gates["P2"] = "FAIL"
         retry_counts = dict(state.get("retry_counts", {}))
         if not is_pass:
             retry_counts["P2"] = retry_counts.get("P2", 0) + 1
@@ -1571,10 +1763,23 @@ def create_workflow(config: AppConfig):
         figure_files = state.get("figure_files", [])
         retry_counts = state.get("retry_counts", {})
         w1_retry = retry_counts.get("W1", 0)
+        code_exec_success = state.get("code_exec_success", False)
+        exec_error = state.get("exec_error", "")
 
         figure_list = ""
         if figure_files:
             figure_list = "\n".join(f"  - {Path(f).name}" for f in figure_files)
+
+        if not code_exec_success:
+            code_results = (
+                f"# ⚠️ 严重警告：代码执行失败，以下为错误信息\n\n"
+                f"## 执行错误\n{exec_error or '未知错误'}\n\n"
+                f"## 证据大纲撰写规则（必须遵守）\n"
+                f"1. 所有主张标注为'待代码修复后验证'\n"
+                f"2. 结果表和图表状态标注为'无数据'\n"
+                f"3. 公式和推导部分可以正常列出\n\n"
+                f"## 原始输出\n{code_results[:3000]}"
+            )
 
         if w1_retry > 0:
             feedback = state.get("stage_output", "")
@@ -1605,13 +1810,22 @@ def create_workflow(config: AppConfig):
         modeling_report = state.get("modeling_report", "")
         code_results = state.get("code_exec_output", "")
         problem_files = state.get("problem_files", [])
+        code_exec_success = state.get("code_exec_success", False)
 
         result = quality.check_w1(evidence, modeling_report, code_results, messages, problem_files)
 
         status = _parse_quality_status(result)
         is_pass = status == "PASS"
+        if not code_exec_success and is_pass:
+            result += "\n\n[W1 自动覆盖] 代码执行失败，证据大纲中的数值无法验证，W1 自动判定为 FAIL。"
+            is_pass = False
         quality_gates = dict(state.get("quality_gates", {}))
-        quality_gates["W1"] = status if status != "UNKNOWN" else ("PASS" if is_pass else "FAIL")
+        if is_pass:
+            quality_gates["W1"] = "PASS"
+        elif status == "BLOCKED":
+            quality_gates["W1"] = "BLOCKED"
+        else:
+            quality_gates["W1"] = "FAIL"
         retry_counts = dict(state.get("retry_counts", {}))
         if not is_pass:
             retry_counts["W1"] = retry_counts.get("W1", 0) + 1
@@ -1637,10 +1851,25 @@ def create_workflow(config: AppConfig):
         figure_files = state.get("figure_files", [])
         retry_counts = state.get("retry_counts", {})
         w2_retry = retry_counts.get("W2", 0)
+        code_exec_success = state.get("code_exec_success", False)
+        exec_error = state.get("exec_error", "")
 
         figure_list = ""
         if figure_files:
             figure_list = "\n".join(f"  - {Path(f).name}" for f in figure_files)
+
+        if not code_exec_success:
+            code_results = (
+                f"# ⚠️ 严重警告：代码执行失败，以下为错误信息\n\n"
+                f"## 执行错误\n{exec_error or '未知错误'}\n\n"
+                f"## 论文撰写规则（必须遵守）\n"
+                f"1. **禁止在结果表格中填入任何数值**（包括'待计算'、'待填'等占位符）\n"
+                f"2. 结果表格可以保留结构，但数值列留空或标注'见代码输出'\n"
+                f"3. 模型推导、公式、算法步骤必须完整（这些不依赖代码结果）\n"
+                f"4. 摘要中不要出现具体数值，改为定性描述（如'模型可实现有效遮蔽'）\n"
+                f"5. 敏感性分析和蒙特卡洛验证章节可以省略（因为无数据）\n\n"
+                f"## 原始输出\n{code_results[:3000]}"
+            )
 
         if w2_retry > 0:
             feedback = state.get("stage_output", "")
@@ -1670,13 +1899,22 @@ def create_workflow(config: AppConfig):
         paper = state.get("paper_output", state.get("stage_output", ""))
         evidence = state.get("evidence_outline", "")
         problem_files = state.get("problem_files", [])
+        code_exec_success = state.get("code_exec_success", False)
 
         result = quality.check_w2(paper, evidence, messages, problem_files)
 
         status = _parse_quality_status(result)
         is_pass = status == "PASS"
+        if not code_exec_success and is_pass:
+            result += "\n\n[W2 自动覆盖] 代码执行失败，论文中的数值无法验证，W2 自动判定为 FAIL。"
+            is_pass = False
         quality_gates = dict(state.get("quality_gates", {}))
-        quality_gates["W2"] = status if status != "UNKNOWN" else ("PASS" if is_pass else "FAIL")
+        if is_pass:
+            quality_gates["W2"] = "PASS"
+        elif status == "BLOCKED":
+            quality_gates["W2"] = "BLOCKED"
+        else:
+            quality_gates["W2"] = "FAIL"
         retry_counts = dict(state.get("retry_counts", {}))
         if not is_pass:
             retry_counts["W2"] = retry_counts.get("W2", 0) + 1
@@ -1694,10 +1932,15 @@ def create_workflow(config: AppConfig):
         }
 
     def done_node(state: WorkflowState) -> Dict[str, Any]:
+        code_exec_success = state.get("code_exec_success", False)
+        if code_exec_success:
+            msg = "🎉 全部流程完成！请查看交付物。\n\n💡 运行诊断: .venv\\Scripts\\python.exe scripts\\diagnose.py"
+        else:
+            msg = "⚠️ 流程完成但代码执行失败，请修复代码后重新运行。\n\n💡 运行诊断: .venv\\Scripts\\python.exe scripts\\diagnose.py"
         return {
             "current_stage": "done",
             "stage_history": state.get("stage_history", []) + ["done"],
-            "messages": [AIMessage(content="🎉 全部流程完成！请查看交付物。")],
+            "messages": [AIMessage(content=msg)],
             "stage_output": "全部流程完成",
             "error": None,
         }

@@ -74,8 +74,6 @@ class NumericalVerifier:
             if isinstance(node, ast.Assign) and node.value:
                 if isinstance(node.value, ast.Constant):
                     ctx["raw_value"] = str(node.value.value)
-                elif isinstance(node.value, (ast.Num,)):
-                    ctx["raw_value"] = str(node.value.n)
         except Exception:
             pass
         return ctx
@@ -221,9 +219,6 @@ class NumericalVerifier:
         for kw in nan_keywords:
             nan_count += results_lower.count(kw)
 
-        # 排除 "None"、"null" 等非数值关键词的误报
-        # 注意：只匹配作为独立单词的 "none"，避免匹配 "none" 在单词中的情况（如 "pronounced"）
-        none_count = results_lower.count("none")
         if nan_count > 0:
             # 检查这些 NaN 是否出现在数值输出上下文中（而非代码或注释中）
             lines = results.split("\n")
@@ -240,9 +235,6 @@ class NumericalVerifier:
                 findings.append(f"P0-数值异常: 结果输出中包含 {nan_count} 个 NaN/Inf 值，代码可能存在除零或数值溢出")
             else:
                 findings.append(f"PASS: 检测到 NaN/Inf 关键词但不在数值输出上下文中，已排除误报")
-
-        if none_count > 0:
-            findings.append(f"PASS: 检测到 {none_count} 个 'None' 但已排除（可能是变量赋值操作）")
 
         negative_count = 0
         for v in values_in_results:

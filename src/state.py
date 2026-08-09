@@ -31,6 +31,9 @@ class WorkflowState(TypedDict):
     raw_exec_output: Optional[str]
     verification_output: Optional[str]
 
+    code_exec_success: bool
+    exec_error: Optional[str]
+
     evidence_outline: Optional[str]
     paper_output: Optional[str]
 

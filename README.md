@@ -9,7 +9,7 @@
 [![LangGraph](https://img.shields.io/badge/LangGraph-0.2+-orange.svg)](https://github.com/langchain-ai/langgraph)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.35+-red.svg)](https://streamlit.io)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Last Updated](https://img.shields.io/badge/Last%20Updated-2025.08.07-brightgreen.svg)]()
+[![Last Updated](https://img.shields.io/badge/Last%20Updated-2026.08.09-brightgreen.svg)]()
 
 </div>
 
@@ -325,11 +325,15 @@ math-model-agent/
 |------|------|--------|
 | `max_tokens` | LLM 最大输出 Token | 16384 |
 | `max_retries` | 质检失败最大重试次数 | 3 |
-| `code_exec_timeout` | 代码执行超时（秒） | 120 |
+| `code_exec_timeout` | 代码执行超时（秒） | 300 |
 | `enable_verification` | 启用数值验证引擎 | `True` |
 | `enable_trap_detection` | 启用陷阱检测 | `True` |
 | `enable_innovation_guidance` | 启用模型创新引导 | `True` |
 | `enable_multi_model_compare` | 启用多模型对比 | `True` |
+| `min_figure_count` | 最少图表数量要求 | 8 |
+| `min_algorithm_count` | 最少算法对比数量 | 2 |
+| `auto_syntax_repair` | 自动语法修复管道 | `True` |
+| `enable_national_competition_mode` | 国赛模式（更严格的标准） | `False` |
 
 ---
 
@@ -371,6 +375,34 @@ math-model-agent/
 ---
 
 ## 🆕 更新日志
+
+### 2026.08.09 — 质量门禁与幻觉数据防护（共 4 项）
+
+| 类别 | 变更内容 |
+|------|---------|
+| 🐛 **Bug 修复** | 修复 P2/W1/W2 质量门禁状态错误赋值：`code_exec_success=False` 时门禁错误显示 PASS，改为显式 if/elif/else 分支 |
+| 🐛 **Bug 修复** | 修复 M1/P1 质量门禁状态赋值一致性，统一为显式分支模式 |
+| 🐛 **Bug 修复** | 修复 `writing.py` 矛盾指令：`write_paper` 标注"待计算"与 `graph.py` 禁止占位符冲突，统一为"数值列留空" |
+| 🐛 **Bug 修复** | 修复 `polish_node` 在代码失败时仍调用 LLM 润色，可能引入幻觉数据，添加 `code_exec_success` 守卫 |
+
+### 2026.08.08 — 计算效率与超时诊断（共 4 项）
+
+| 类别 | 变更内容 |
+|------|---------|
+| ⚡ **性能优化** | 代码执行超时从 120s 增加到 300s，适配 4 层嵌套循环 + 700 时间步的计算量 |
+| 🔧 **诊断增强** | 超时时自动分析代码特征（嵌套循环层数、时间步长、差分进化参数），输出针对性修复建议 |
+| 🔧 **提示词优化** | `coding.py` 新增"计算效率规范"：禁止 3+ 层嵌套循环、时间步长 ≥0.5s、差分进化参数限制 |
+| 🐛 **Bug 修复** | 修复 `error_analysis_node` 在代码失败时生成幻觉数据（蒙特卡洛/敏感性分析数值），改为输出诊断建议 |
+| 🐛 **Bug 修复** | 修复论文中"待计算"占位符问题，统一改为"不得填入任何数值，留空或标注'见代码输出'" |
+
+### 2026.08.07 — 防御性编程与配置修复（共 4 项）
+
+| 类别 | 变更内容 |
+|------|---------|
+| 🐛 **Bug 修复** | 修复 NumPy 广播错误导致代码崩溃，在 `coding.py` 提示词中添加"防御性编程规范" |
+| 🐛 **Bug 修复** | 修复 `config.py` 空环境变量崩溃：`float(os.getenv("TEMPERATURE", "0.1"))` → 加 `or "0.1"` |
+| 🐛 **Bug 修复** | 修复 `graph.py` 异常静默吞没：`except Exception: pass` → 输出异常信息 |
+| 🐛 **Bug 修复** | 修复 `verifier.py` 死代码：移除 Python 3.8+ 已废弃的 `ast.Num` 分支 |
 
 ### 2025.08.07 — 全面 Bug 修复（共 7 项）
 

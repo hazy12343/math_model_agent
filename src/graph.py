@@ -606,12 +606,17 @@ def _check_result_plausibility(output: str, code: str, problem: str) -> List[str
             if theory_max > 0 and actual / theory_max < 0.1:
                 warnings.append(f"P0-结果质量过低: 实际结果({actual})仅为理论最大值({theory_max})的 {actual/theory_max*100:.1f}%，搜索精度可能严重不足")
 
-    # 9. 检测"未收敛"状态
-    unconverged_patterns = [r'未收敛', r'not converged', r'未找到有效解', r'全部为\s*0']
-    for pat in unconverged_patterns:
-        if re.search(pat, output, re.IGNORECASE):
-            warnings.append("P0-算法未收敛: 迭代算法未收敛或未找到有效解，需要调整算法参数或约束处理方式")
-            break
+    # 9. 检测"未收敛"状态（只有全部或大部分未收敛才警告）
+    unconverged_count = len(re.findall(r'未收敛|not converged', output, re.IGNORECASE))
+    # 也检测"未找到有效解"和全零结果
+    all_zero = bool(re.search(r'全部为\s*0', output))
+    no_solution = bool(re.search(r'未找到有效解', output, re.IGNORECASE))
+    if all_zero or no_solution:
+        warnings.append("P0-算法未收敛: 迭代算法未收敛或未找到有效解，需要调整算法参数或约束处理方式")
+    elif unconverged_count >= 3:
+        warnings.append(f"P0-算法未收敛: {unconverged_count} 个任务未收敛，可能需要调整算法参数")
+    elif unconverged_count > 0:
+        warnings.append(f"P1-部分未收敛: {unconverged_count} 个任务未收敛，但多数任务已收敛，整体结果可能仍可用")
 
     # 10. 检测是否有结果但过于粗糙
     # 如果搜索点数 < 200 且搜索空间 > 1000，给出警告
@@ -625,15 +630,15 @@ def _check_result_plausibility(output: str, code: str, problem: str) -> List[str
 
 
 def _extract_comparison_table(output: str) -> str:
-    """从执行输出中提取算法对比表"""
+    """从执行输出中提取算法对比表（支持 Markdown 表格和空格对齐表格）"""
     lines = output.split("\n")
     table_lines = []
     in_table = False
+    in_simple_table = False
     table_count = 0
     for i, line in enumerate(lines):
-        # 检测表头行（包含算法/方法/模型+结果/精度/耗时等关键词）
+        # 检测 Markdown 表头行（包含算法/方法/模型+结果/精度/耗时等关键词）
         if re.search(r'\|?\s*(算法|方法|模型|Method|Algorithm|Model)\s*\|', line, re.IGNORECASE):
-            # 检查是否包含结果/精度/耗时等列
             if re.search(r'(结果|精度|耗时|稳定性|收敛|误差|时间|最优值|score|time|accuracy|result)', line, re.IGNORECASE):
                 in_table = True
                 table_lines.append(f"\n--- 对比表 {table_count + 1} ---")
@@ -642,14 +647,48 @@ def _extract_comparison_table(output: str) -> str:
         if in_table:
             stripped = line.strip()
             if not stripped or (not stripped.startswith("|") and not stripped.startswith("+") and not stripped.startswith("---") and not re.search(r'\|', stripped)):
-                if len(table_lines) >= 4:  # 表头 + 分隔线 + 至少一行数据
+                if len(table_lines) >= 4:
                     table_count += 1
                 in_table = False
                 continue
             table_lines.append(line)
 
-    # 如果还有未关闭的表格
+        # 检测空格对齐表格（算法对比: 后跟空格对齐的表格）
+        if not in_table and re.search(r'算法对比\s*[:：]', line):
+            in_simple_table = True
+            table_lines.append(f"\n--- 对比表 {table_count + 1} ---")
+            table_lines.append("| 算法 | 结果 | 耗时 |")
+            table_lines.append("|------|------|------|")
+            continue
+        if in_simple_table:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("==="):
+                if len(table_lines) >= 5:
+                    table_count += 1
+                in_simple_table = False
+                continue            # 尝试多种格式匹配
+            parts = stripped.split()
+            # 格式1: "遗传算法  0.00  1.05" (空格分隔)
+            if len(parts) >= 2 and any(kw in stripped for kw in [
+                "算法", "遗传", "粒子", "贪心", "网格", "模拟退火", "梯度", "随机", "穷举",
+                "genetic", "greedy", "pso", "grid", "模型", "方法", "model", "method"
+            ]):
+                algo = parts[0]
+                vals = parts[1:]
+                table_lines.append(f"| {algo} | {' | '.join(vals[:2])} |")
+                continue
+            # 格式2: "模型A (描述): 0.00 s" (冒号分隔)
+            if ":" in stripped or "：" in stripped:
+                kv = re.split(r'[：:]', stripped, maxsplit=1)
+                if len(kv) == 2:
+                    algo = kv[0].strip()
+                    val = kv[1].strip()
+                    table_lines.append(f"| {algo} | {val} |")
+                continue
+
     if in_table and len(table_lines) >= 4:
+        table_count += 1
+    if in_simple_table and len(table_lines) >= 5:
         table_count += 1
 
     return "\n".join(table_lines) if table_lines else ""
@@ -661,12 +700,14 @@ def _parse_quality_status(result: str) -> str:
     if m:
         return m.group(1)
     lines = text.split("\n")
+    has_fail = False
+    has_pass = False
     for i, line in enumerate(lines):
         if "状态" in line or "STATUS" in line:
-            if "PASS" in line and "FAIL" not in line:
-                return "PASS"
             if "FAIL" in line:
-                return "FAIL"
+                has_fail = True
+            if "PASS" in line:
+                has_pass = True
             if "BLOCKED" in line:
                 return "BLOCKED"
             if i + 1 < len(lines):
@@ -676,12 +717,16 @@ def _parse_quality_status(result: str) -> str:
                 for kw in ("PASS", "FAIL", "BLOCKED"):
                     if kw in nl and all(k not in nl for k in ("PASS", "FAIL", "BLOCKED") if k != kw):
                         return kw
-    if re.search(r'\bPASS\b', text) and not re.search(r'\bFAIL\b', text) and not re.search(r'\bBLOCKED\b', text):
-        return "PASS"
-    if re.search(r'\bFAIL\b', text):
+    if has_fail:
         return "FAIL"
+    if has_pass:
+        return "PASS"
     if re.search(r'\bBLOCKED\b', text):
         return "BLOCKED"
+    if re.search(r'\bFAIL\b', text):
+        return "FAIL"
+    if re.search(r'\bPASS\b', text):
+        return "PASS"
     if "通过" in result or "✅" in result:
         return "PASS"
     if "未通过" in result or "失败" in result or "❌" in result:
@@ -741,6 +786,13 @@ def create_workflow(config: AppConfig):
         project_root = state.get("project_root", str(config.project_root))
         retry_counts = state.get("retry_counts", {})
         m1_retry = retry_counts.get("M1", 0)
+
+        # 聚焦问题指令
+        focus_q = state.get("focus_question", "").strip()
+        focus_instruction = ""
+        if focus_q:
+            focus_instruction = f"\n\n## ⚠️ 用户聚焦指令（最高优先级）\n用户明确要求只处理第{focus_q}问。请只分析和建模第{focus_q}问，忽略其他子问题。不要在报告中涉及其他子问题的建模。"
+            problem = problem + focus_instruction
 
         trap_detector = TrapDetector(project_root)
         trap_note = ""
@@ -832,6 +884,12 @@ def create_workflow(config: AppConfig):
         project_root = state.get("project_root", str(config.project_root))
         retry_counts = state.get("retry_counts", {})
         p1_retry = retry_counts.get("P1", 0)
+
+        # 聚焦问题指令
+        focus_q = state.get("focus_question", "").strip()
+        if focus_q:
+            focus_instruction = f"\n\n## ⚠️ 用户聚焦指令（最高优先级）\n用户明确要求只实现第{focus_q}问的代码。请只生成第{focus_q}问的求解代码，忽略其他子问题。"
+            modeling_report = focus_instruction + "\n\n" + modeling_report
 
         if p1_retry > 0:
             feedback = state.get("stage_output", "")
@@ -937,6 +995,12 @@ def create_workflow(config: AppConfig):
         retry_counts = state.get("retry_counts", {})
         p2_retry = retry_counts.get("P2", 0)
 
+        # 聚焦问题指令
+        focus_q = state.get("focus_question", "").strip()
+        if focus_q:
+            focus_instruction = f"\n\n## ⚠️ 用户聚焦指令（最高优先级）\n用户明确要求只实现第{focus_q}问的代码。请只生成第{focus_q}问的求解代码，忽略其他子问题。"
+            modeling_report = focus_instruction + "\n\n" + modeling_report
+
         if p2_retry > 0:
             feedback = state.get("stage_output", "")
             if not feedback:
@@ -1037,6 +1101,56 @@ def create_workflow(config: AppConfig):
             exec_file = exec_dir / "solution.py"
             exec_file.write_text(code_file, encoding="utf-8")
 
+            # 预执行安全扫描：检测可能超时的代码模式
+            pre_scan_warnings = []
+            code_lines = code_file.split("\n")
+            max_nest = 0
+            total_loops = 0
+            for line in code_lines:
+                stripped = line.strip()
+                if stripped.startswith("for ") or stripped.startswith("while "):
+                    total_loops += 1
+                    indent = len(line) - len(line.lstrip())
+                    depth = max(1, indent // 4 + 1)
+                    max_nest = max(max_nest, depth)
+            de_scan = re.search(r'differential_evolution\(.*?popsize\s*=\s*(\d+).*?maxiter\s*=\s*(\d+)', code_file, re.DOTALL)
+            if de_scan:
+                de_pop = int(de_scan.group(1))
+                de_iter = int(de_scan.group(2))
+                if de_pop > 10 or de_iter > 30:
+                    pre_scan_warnings.append(f"⚠️ 差分进化参数违规: popsize={de_pop} (要求≤10), maxiter={de_iter} (要求≤30)")
+            pso_scan_pop = re.search(r'(?:n_particles|swarm_size)\s*=\s*(\d+)', code_file)
+            if pso_scan_pop:
+                pso_pop = int(pso_scan_pop.group(1))
+                if pso_pop > 20:
+                    pre_scan_warnings.append(f"⚠️ PSO 粒子数违规: {pso_pop} (要求≤20)")
+            pso_scan_iter = None
+            for m in re.finditer(r'for\s+\w+\s+in\s+range\((\d+)\)', code_file):
+                n = int(m.group(1))
+                if n > 50:
+                    pso_scan_iter = n
+                    break
+            if pso_scan_iter:
+                pre_scan_warnings.append(f"⚠️ PSO 迭代次数违规: {pso_scan_iter} (要求≤50)")
+            dt_scan = re.search(r'(?:DT|dt|TIME_STEP|time_step)\s*=\s*(\d+\.?\d*)', code_file)
+            if dt_scan:
+                dt_val = float(dt_scan.group(1))
+                if dt_val < 0.2:
+                    pre_scan_warnings.append(f"⚠️ 时间步长违规: DT={dt_val} (要求≥0.2)")
+            if max_nest > 3:
+                pre_scan_warnings.append(f"⚠️ 嵌套循环过深: 最大 {max_nest} 层 (共 {total_loops} 个循环, 要求≤3层)")
+            # 检测固定值惩罚（return 1e6 / return 1e9 等）
+            fixed_penalty = re.search(r'return\s+(1e\d+|1E\d+|\d{6,})', code_file)
+            if fixed_penalty:
+                pre_scan_warnings.append(f"⚠️ 固定值惩罚: '{fixed_penalty.group(0)}' — 这会导致优化器失效！请改用比例惩罚（penalty += 1000 * violation）")
+
+            if pre_scan_warnings:
+                output = "### ⚠️ 预执行扫描警告（代码可能超时，但将继续执行）\n"
+                output += "\n".join(f"  - {w}" for w in pre_scan_warnings)
+                output += "\n\n---\n\n"
+            else:
+                output = ""
+
             figure_files = []
             result_files = []
             code_files = []
@@ -1124,24 +1238,51 @@ def create_workflow(config: AppConfig):
             except subprocess.TimeoutExpired:
                 # 分析代码特征，给出针对性修复建议
                 code_lines = code_file.split("\n")
-                nested_loop_count = len([l for l in code_lines if l.strip().startswith("for ")])
+                # 计算实际最大嵌套深度（而非简单计数所有 for 行）
+                max_nesting = 0
+                total_for_loops = 0
+                for line in code_lines:
+                    stripped = line.strip()
+                    if stripped.startswith("for ") or stripped.startswith("while "):
+                        total_for_loops += 1
+                        # 用缩进估计嵌套深度
+                        indent = len(line) - len(line.lstrip())
+                        depth = max(1, indent // 4 + 1)  # 假设 4 空格缩进
+                        max_nesting = max(max_nesting, depth)
                 has_meshgrid = "meshgrid" in code_file
-                time_step_match = re.search(r'TIME_STEP\s*=\s*(\d+\.?\d*)', code_file)
+                time_step_match = re.search(r'(?:DT|TIME_STEP|dt|time_step)\s*=\s*(\d+\.?\d*)', code_file)
                 time_step = float(time_step_match.group(1)) if time_step_match else None
                 de_match = re.search(r'differential_evolution\(.*?maxiter\s*=\s*(\d+)', code_file, re.DOTALL)
                 de_maxiter = int(de_match.group(1)) if de_match else None
                 de_pop_match = re.search(r'differential_evolution\(.*?popsize\s*=\s*(\d+)', code_file, re.DOTALL)
                 de_popsize = int(de_pop_match.group(1)) if de_pop_match else None
+                # 检测 PSO 参数
+                pso_particles_match = re.search(r'(?:n_particles|swarm_size|num_particles)\s*=\s*(\d+)', code_file)
+                pso_particles = int(pso_particles_match.group(1)) if pso_particles_match else None
+                pso_iters_match = re.search(r'(?:range\((\d+)\)|n_iterations\s*=\s*(\d+))', code_file)
+                # 只捕获大迭代数（>50 的才可能是 PSO 主循环）
+                pso_iters = None
+                for m in re.finditer(r'for\s+\w+\s+in\s+range\((\d+)\)', code_file):
+                    n = int(m.group(1))
+                    if n > 50:
+                        pso_iters = n
+                        break
 
                 diag_parts = []
-                if nested_loop_count > 3:
-                    diag_parts.append(f"  - 检测到 {nested_loop_count} 层 for 循环，建议用 np.meshgrid() 向量化替代")
+                if max_nesting > 3:
+                    diag_parts.append(f"  - 最大嵌套深度 {max_nesting} 层（共 {total_for_loops} 个循环），建议用向量化减少嵌套")
+                elif total_for_loops > 10:
+                    diag_parts.append(f"  - 共 {total_for_loops} 个循环语句（最大嵌套 {max_nesting} 层），建议合并或向量化")
                 if time_step and time_step < 0.2:
-                    diag_parts.append(f"  - 时间步长 TIME_STEP={time_step}s 过小，建议改为 ≥ 0.5s")
+                    diag_parts.append(f"  - 时间步长 DT={time_step}s 过小（{time_step}s × 20s 窗口 = {int(20/time_step)} 步），建议改为 ≥ 0.5s")
                 if de_maxiter and de_maxiter > 30:
-                    diag_parts.append(f"  - 差分进化 maxiter={de_maxiter} 过大，建议 ≤ 20")
+                    diag_parts.append(f"  - 差分进化 maxiter={de_maxiter} 过大（违规：要求 ≤ 30），建议改为 20")
                 if de_popsize and de_popsize > 10:
-                    diag_parts.append(f"  - 差分进化 popsize={de_popsize} 过大，建议 ≤ 8")
+                    diag_parts.append(f"  - 差分进化 popsize={de_popsize} 过大（违规：要求 ≤ 10），建议改为 8")
+                if pso_particles and pso_particles > 20:
+                    diag_parts.append(f"  - 粒子群规模 {pso_particles} 过大（建议 ≤ 20），建议减少粒子数")
+                if pso_iters and pso_iters > 50:
+                    diag_parts.append(f"  - 粒子群迭代 {pso_iters} 次过多（建议 ≤ 50），建议减少迭代次数")
                 if not diag_parts:
                     diag_parts.append("  - 可能存在死循环或无限递归，请检查 while 循环终止条件")
 
@@ -1249,7 +1390,7 @@ def create_workflow(config: AppConfig):
             for f in bc["findings"]:
                 verify_results.append(f"  {f}")
 
-        sc = verifier.sensitivity_check(exec_output)
+        sc = verifier.sensitivity_check(exec_output, code)
         verify_results.append(f"[敏感性分析] 状态: {sc['status']}")
         for f in sc["findings"]:
             verify_results.append(f"  {f}")
@@ -1352,6 +1493,7 @@ def create_workflow(config: AppConfig):
             algo_patterns = [
                 ("网格搜索", ["网格搜索", "grid search", "grid_search"]),
                 ("遗传算法", ["遗传算法", "genetic algorithm", "genetic"]),
+                ("贪心算法", ["贪心", "greedy"]),
                 ("粒子群", ["粒子群", "particle swarm", "pso"]),
                 ("模拟退火", ["模拟退火", "simulated annealing", "simulated_annealing"]),
                 ("梯度下降", ["梯度下降", "gradient descent", "gradient"]),
@@ -1363,6 +1505,7 @@ def create_workflow(config: AppConfig):
             for algo_name, algo_keys in algo_patterns:
                 for algo_key in algo_keys:
                     patterns = [
+                        rf'{re.escape(algo_key)}\s+(\d+\.?\d*)\s+(\d+\.?\d*)',  # 空格对齐格式
                         rf'{re.escape(algo_key)}.*?[：:]\s*(\d+\.?\d*)\s*[秒s]',
                         rf'{re.escape(algo_key)}.*?最优[值解].*?[=:]\s*(\d+\.?\d*)',
                         rf'{re.escape(algo_key)}.*?结果[：:]\s*(\d+\.?\d*)',
@@ -1473,6 +1616,60 @@ def create_workflow(config: AppConfig):
                 "error": None,
             }
 
+        # 检测结果是否全为零/NaN（泛化：适用于任何优化问题）
+        all_zero = False
+        all_nan = False
+        non_zero_count = 0
+        for line in raw_exec.split("\n"):
+            nums = re.findall(r'(?<![a-zA-Z0-9._-])(\d+\.\d+)(?![a-zA-Z0-9._-])', line)
+            for n in nums:
+                val = float(n)
+                if val > 1e-10:
+                    non_zero_count += 1
+                elif val != 0.0:
+                    pass  # negative values are fine
+            if re.search(r'\bNaN\b|\bnan\b', line, re.IGNORECASE):
+                all_nan = True
+
+        if non_zero_count == 0 and not all_nan:
+            all_zero = True
+
+        if all_zero or all_nan:
+            anomaly_type = "全零" if all_zero else "NaN"
+            error_text = "\n".join([
+                "## 误差分析报告",
+                "",
+                f"### ⚠️ 结果异常：所有优化结果均为{anomaly_type}，无法生成误差分析",
+                "",
+                f"**执行状态**: 代码执行成功，但数值结果异常（{anomaly_type}）",
+                "",
+                "由于所有优化结果均为异常值，没有有效数据来进行误差分析。",
+                "以下是可能的原因和修复建议：",
+                "",
+                "### 通用排查清单",
+                "",
+                "1. **搜索空间过大**: 随机初始化无法命中有效解区域 → 尝试分阶段搜索（粗搜索定位 + 细搜索精化）",
+                "2. **约束条件过强**: 可行域占比过小 → 检查约束条件是否合理，考虑放宽或使用惩罚函数",
+                "3. **初始化策略不当**: 初始种群未覆盖有效区域 → 使用启发式方法缩小搜索空间（如基于问题几何结构的预计算）",
+                "4. **目标函数有缺陷**: 检查目标函数是否在有效区域内确实能返回非零值",
+                "5. **数值精度问题**: 检查浮点运算是否导致有效解被误判为零",
+                "",
+                "### 诊断建议",
+                "1. 在目标函数中添加调试输出，打印中间计算值",
+                "2. 手动构造一个已知可行解，验证目标函数能正确计算",
+                "3. 先用网格搜索小范围扫描，确认可行域存在",
+            ])
+            return {
+                "current_stage": "error_analysis",
+                "stage_history": state.get("stage_history", []) + ["error_analysis"],
+                "error_analysis": error_text,
+                "code_exec_output": exec_output + f"\n\n[误差分析]\n{error_text}",
+                "stage_output": state.get("stage_output", ""),
+                "code_exec_success": code_exec_success,
+                "exec_error": exec_error,
+                "error": None,
+            }
+
         # 尝试使用 LLM 生成针对性的误差分析
         llm_analysis = ""
         try:
@@ -1481,7 +1678,7 @@ def create_workflow(config: AppConfig):
             for line in raw_exec.split("\n"):
                 line_stripped = line.strip()
                 if re.search(r'\d+\.\d+', line_stripped) and any(kw in line_stripped.lower() for kw in
-                    ["最优", "最佳", "结果", "遮蔽", "时长", "时间", "距离", "速度", "角度", "收敛"]):
+                    ["最优", "最佳", "结果", "时长", "时间", "距离", "速度", "角度", "收敛", "优化", "目标"]):
                     extracted_values.append(line_stripped)
 
             analysis_prompt = f"""基于以下代码执行结果和题目描述，生成针对性的误差分析报告。
@@ -1499,14 +1696,14 @@ def create_workflow(config: AppConfig):
 {raw_exec[:3000]}
 
 请生成一份结构化的误差分析报告，要求：
-1. 必须给出具体数值估计，不能只说"取决于精度"
-2. 分析网格搜索步长导致的误差量级
-3. 分析模型简化（如忽略空气阻力）导致的误差量级
-4. 分析蒙特卡洛验证的置信区间宽度对结论的影响
+1. 从执行结果中提取实际数值来估计误差，如果执行结果中缺少某类数据，明确标注"数据不足，无法估计"而非编造数值
+2. 分析数值方法（如离散化、迭代次数）导致的误差量级
+3. 分析模型简化（如忽略次要物理因素）导致的误差量级
+4. 如果存在蒙特卡洛/随机模拟，分析其置信区间宽度对结论的影响
 5. 指出最主要的误差来源
 6. 给出具体的改进建议
 
-使用 Markdown 表格输出每条误差的具体数值估计。"""
+使用 Markdown 表格输出每条误差的具体数值估计。对于无法估计的误差，在表格中标注"数据不足"。"""
             project_root = state.get("project_root", str(config.project_root))
             writing_prompt = writing.load_system_prompt().replace("{project_root}", project_root)
             llm_analysis = writing.invoke(messages, user_input=analysis_prompt, system_prompt=writing_prompt)
@@ -1732,6 +1929,13 @@ def create_workflow(config: AppConfig):
         if not code_exec_success and is_pass:
             result += "\n\n[P2 自动覆盖] 代码执行失败（非零退出码/异常），P2 自动判定为 FAIL。请修复代码后重试。"
             is_pass = False
+        # 硬性检查：验证器发现结果异常（如全零值）时自动 FAIL
+        if is_pass and re.search(r'\[结果异常检测\].*FAIL', exec_output):
+            result += "\n\n[P2 自动覆盖] 数值验证检测到结果异常（如全零值/NaN/负值），P2 自动判定为 FAIL。请修复算法后重试。"
+            is_pass = False
+        if is_pass and re.search(r'P0-结果异常', exec_output):
+            result += "\n\n[P2 自动覆盖] 数值验证检测到 P0-结果异常，P2 自动判定为 FAIL。请修复算法后重试。"
+            is_pass = False
         quality_gates = dict(state.get("quality_gates", {}))
         if is_pass:
             quality_gates["P2"] = "PASS"
@@ -1765,6 +1969,12 @@ def create_workflow(config: AppConfig):
         w1_retry = retry_counts.get("W1", 0)
         code_exec_success = state.get("code_exec_success", False)
         exec_error = state.get("exec_error", "")
+
+        # 聚焦问题指令
+        focus_q = state.get("focus_question", "").strip()
+        if focus_q:
+            focus_instruction = f"\n\n## ⚠️ 用户聚焦指令（最高优先级）\n用户明确要求只撰写第{focus_q}问。请只为第{focus_q}问生成证据大纲，忽略其他子问题。"
+            modeling_report = focus_instruction + "\n\n" + modeling_report
 
         figure_list = ""
         if figure_files:
@@ -1854,6 +2064,12 @@ def create_workflow(config: AppConfig):
         code_exec_success = state.get("code_exec_success", False)
         exec_error = state.get("exec_error", "")
 
+        # 聚焦问题指令
+        focus_q = state.get("focus_question", "").strip()
+        if focus_q:
+            focus_instruction = f"\n\n## ⚠️ 用户聚焦指令（最高优先级）\n用户明确要求只撰写第{focus_q}问。请只为第{focus_q}问生成完整论文，忽略其他子问题。"
+            modeling_report = focus_instruction + "\n\n" + modeling_report
+
         figure_list = ""
         if figure_files:
             figure_list = "\n".join(f"  - {Path(f).name}" for f in figure_files)
@@ -1866,7 +2082,7 @@ def create_workflow(config: AppConfig):
                 f"1. **禁止在结果表格中填入任何数值**（包括'待计算'、'待填'等占位符）\n"
                 f"2. 结果表格可以保留结构，但数值列留空或标注'见代码输出'\n"
                 f"3. 模型推导、公式、算法步骤必须完整（这些不依赖代码结果）\n"
-                f"4. 摘要中不要出现具体数值，改为定性描述（如'模型可实现有效遮蔽'）\n"
+                f"4. 摘要中不要出现具体数值，改为定性描述（如'模型可实现有效优化'）\n"
                 f"5. 敏感性分析和蒙特卡洛验证章节可以省略（因为无数据）\n\n"
                 f"## 原始输出\n{code_results[:3000]}"
             )
@@ -1945,6 +2161,64 @@ def create_workflow(config: AppConfig):
             "error": None,
         }
 
+    def failed_node(state: WorkflowState) -> Dict[str, Any]:
+        """P2 耗尽重试后的失败节点：生成失败报告，不生成论文"""
+        code_exec_success = state.get("code_exec_success", False)
+        exec_error = state.get("exec_error", "")
+        exec_output = state.get("code_exec_output", "")
+        project_root = state.get("project_root", str(config.project_root))
+
+        report_lines = [
+            "# 求解失败报告",
+            "",
+            "## 失败原因",
+            "",
+        ]
+
+        if not code_exec_success:
+            report_lines.append("代码执行失败（非零退出码或异常）：")
+            report_lines.append(f"```\n{exec_error}\n```")
+        elif "结果异常检测" in exec_output and "FAIL" in exec_output:
+            report_lines.append("代码执行成功，但数值验证检测到结果异常（如全零值/NaN/负值）。")
+            report_lines.append("优化算法未能找到有效解，可能原因：")
+            report_lines.append("1. 搜索空间过大，随机初始化无法命中有效区域")
+            report_lines.append("2. 约束条件过强，可行域过小")
+            report_lines.append("3. 初始化策略不当（如参数初始化在无效区域而非可行域附近）")
+        else:
+            report_lines.append("代码执行成功，但 P2 质量门禁未通过。")
+            report_lines.append("请检查代码逻辑和数值结果。")
+
+        report_lines.extend([
+            "",
+            "## 建议修复方向",
+            "",
+            "1. 在优化前先计算几何约束（可行域范围），缩小搜索空间",
+            "2. 使用网格搜索 + 局部优化的分阶段策略",
+            "3. 检查约束判定条件是否过于严格",
+            "4. 检查初始条件是否在目标可达区域内",
+            "",
+            "## 诊断建议",
+            "",
+            "运行诊断脚本获取详细分析：",
+            "```",
+            ".venv\\Scripts\\python.exe scripts\\diagnose.py",
+            "```",
+        ])
+
+        report = "\n".join(report_lines)
+
+        output_path = Path(project_root) / "output" / "求解失败报告.md"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(report, encoding="utf-8")
+
+        return {
+            "current_stage": "failed",
+            "stage_history": state.get("stage_history", []) + ["failed"],
+            "messages": [AIMessage(content=report)],
+            "stage_output": report,
+            "error": "P2质量门禁耗尽重试后仍失败",
+        }
+
     def route_after_init(state: WorkflowState) -> Literal["modeling", "done"]:
         files = state.get("problem_files", [])
         problem = state.get("problem_description", "")
@@ -1970,14 +2244,14 @@ def create_workflow(config: AppConfig):
             return "coding_p1"
         return "coding_full"
 
-    def route_after_p2(state: WorkflowState) -> Literal["model_comparison", "coding_full"]:
+    def route_after_p2(state: WorkflowState) -> Literal["model_comparison", "coding_full", "failed"]:
         gates = state.get("quality_gates", {})
         retry = state.get("retry_counts", {}).get("P2", 0)
         if gates.get("P2") == "PASS":
             return "model_comparison"
         if retry < config.max_retries:
             return "coding_full"
-        return "model_comparison"
+        return "failed"
 
     def route_after_w1(state: WorkflowState) -> Literal["writing_full", "writing_w1"]:
         gates = state.get("quality_gates", {})
@@ -2017,6 +2291,7 @@ def create_workflow(config: AppConfig):
     workflow.add_node("w2_check", w2_check_node)
     workflow.add_node("polish", polish_node)
     workflow.add_node("done", done_node)
+    workflow.add_node("failed", failed_node)
 
     workflow.set_entry_point("init")
 
@@ -2028,7 +2303,7 @@ def create_workflow(config: AppConfig):
     workflow.add_edge("coding_full", "code_exec")
     workflow.add_edge("code_exec", "verify")
     workflow.add_edge("verify", "p2_check")
-    workflow.add_conditional_edges("p2_check", route_after_p2, {"model_comparison": "model_comparison", "coding_full": "coding_full"})
+    workflow.add_conditional_edges("p2_check", route_after_p2, {"model_comparison": "model_comparison", "coding_full": "coding_full", "failed": "failed"})
     workflow.add_edge("model_comparison", "error_analysis")
     workflow.add_edge("error_analysis", "writing_w1")
     workflow.add_edge("writing_w1", "w1_check")
@@ -2036,6 +2311,7 @@ def create_workflow(config: AppConfig):
     workflow.add_edge("writing_full", "w2_check")
     workflow.add_conditional_edges("w2_check", route_after_w2, {"polish": "polish", "writing_full": "writing_full"})
     workflow.add_edge("polish", "done")
+    workflow.add_edge("failed", "done")
     workflow.add_edge("done", END)
 
     memory = MemorySaver()

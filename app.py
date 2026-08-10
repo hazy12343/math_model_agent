@@ -53,6 +53,7 @@ if "workflow_state" not in st.session_state:
         "stage_output": "",
         "modeling_report": "",
         "terminology_table": "",
+        "focus_question": "",
     }
 
 if "messages" not in st.session_state:
@@ -121,6 +122,7 @@ def _build_initial_state() -> dict:
         "stage_output": "",
         "user_input": "",
         "uploaded_files": st.session_state.workflow_state.get("problem_files", []),
+        "focus_question": st.session_state.workflow_state.get("focus_question", ""),
     }
 
 
@@ -134,6 +136,7 @@ def _run_full_workflow():
         "terminology_table": st.session_state.workflow_state.get("terminology_table", ""),
         "code_exec_output": st.session_state.workflow_state.get("code_exec_output", ""),
         "evidence_outline": st.session_state.workflow_state.get("evidence_outline", ""),
+        "focus_question": st.session_state.workflow_state.get("focus_question", ""),
         "messages": st.session_state.workflow_state.get("messages", []),
         "current_stage": "init",
         "competition": st.session_state.workflow_state.get("competition", "cumcm"),
@@ -219,6 +222,7 @@ def _run_single_stage(stage: str):
         "terminology_table": st.session_state.workflow_state.get("terminology_table", ""),
         "code_exec_output": st.session_state.workflow_state.get("code_exec_output", ""),
         "evidence_outline": st.session_state.workflow_state.get("evidence_outline", ""),
+        "focus_question": st.session_state.workflow_state.get("focus_question", ""),
         "messages": st.session_state.workflow_state.get("messages", []),
         "current_stage": stage,
         "competition": st.session_state.workflow_state.get("competition", "cumcm"),
@@ -459,10 +463,13 @@ with step1:
 
 with step2:
     st.markdown("### 📝 第二步：描述题目")
-    problem_text = render_step_problem()
+    problem_text, focus_question = render_step_problem()
     if problem_text:
         st.session_state.workflow_state["problem_description"] = problem_text
         st.success(f"✅ 题目已录入（{len(problem_text)} 字）")
+    if focus_question:
+        st.session_state.workflow_state["focus_question"] = focus_question
+        st.session_state["focus_question"] = focus_question
 
 with step3:
     st.markdown("### 🚀 第三步：选择模式")

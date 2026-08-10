@@ -18,6 +18,7 @@ class WorkflowState(TypedDict):
 
     problem_description: str
     problem_files: List[str]
+    focus_question: Optional[str]
     attachment_hashes: Dict[str, str]
 
     modeling_report: Optional[str]

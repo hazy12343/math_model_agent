@@ -82,12 +82,12 @@ class WritingAgent(BaseAgent):
 # 参考文献要求（关键）
 - 论文结尾必须包含参考文献列表，至少 5 篇
 - 参考文献应包括：
-  - 1-2 篇经典方法文献（如牛顿力学、运动学分析等相关标准教材）
-  - 1-2 篇题目领域相关文献（如烟幕干扰、导弹防御、无人机协同等）
+  - 1-2 篇经典方法文献（如数值分析、优化理论、概率统计等相关标准教材）
+  - 1-2 篇题目领域相关文献（如题目所属领域的相关研究文献）
   - 1-2 篇算法方法文献（如网格搜索、遗传算法、粒子群等优化方法）
 - 参考文献格式：[编号] 作者. 标题. 期刊/出版社, 年份.
 - 可以使用 `paper_search` 工具搜索相关学术文献
-- 题目给出的物理定律和数学公式（如牛顿定律、运动学方程）属于已知常识，无需引用外部文献
+- 题目给出的基本物理定律和数学公式属于已知常识，无需引用外部文献
 """)
         return "\n".join(parts)
 
@@ -109,6 +109,11 @@ class WritingAgent(BaseAgent):
     ) -> str:
         prompt = self.load_system_prompt().replace("{project_root}", project_root)
 
+        # 检测用户聚焦指令
+        is_focused = "用户聚焦指令" in modeling_report
+        if is_focused:
+            prompt += "\n\n# ⚠️ 最高优先级指令\n用户明确要求只撰写特定子问题的论文。你必须严格遵守：只撰写该子问题的论文，不要涉及其他子问题！\n\n# ⚠️ 防重复指令\n禁止在输出中重复相同的段落！每段内容只写一次，不要大段重复！"
+
         user_msg = f"""请建立证据大纲（W1阶段）：
 
 ## 题目分析报告
@@ -120,7 +125,7 @@ class WritingAgent(BaseAgent):
 ## 图表清单
 {figure_list[:3000]}
 
-请为每个子问题建立 Claim-Evidence 映射：
+请为{"该子问题" if is_focused else "每个子问题"}建立 Claim-Evidence 映射：
 1. 核心主张
 2. 支撑公式
 3. 结果表位置
@@ -140,6 +145,10 @@ class WritingAgent(BaseAgent):
         project_root: str,
     ) -> str:
         prompt = self.load_system_prompt().replace("{project_root}", project_root)
+
+        # 检测用户聚焦指令
+        if "用户聚焦指令" in modeling_report:
+            prompt += "\n\n# ⚠️ 最高优先级指令\n用户明确要求只撰写特定子问题的论文。你必须严格遵守：只撰写该子问题的论文，不要涉及其他子问题！\n\n# ⚠️ 防重复指令\n禁止在论文中重复输出相同的段落！每段内容只写一次，不要大段重复！如果发现自己陷入重复，立即切换到下一个章节。"
 
         # 搜索相关参考文献（基于题目内容动态生成搜索词）
         references = ""
@@ -205,5 +214,7 @@ class WritingAgent(BaseAgent):
 ## 反馈
 {feedback}
 
-请修正论文并重新输出。"""
+请修正论文并重新输出。
+
+⚠️ **禁止大段重复段落！** 每段内容只写一次，不要复制粘贴相同的内容！"""
         return self.invoke(messages, user_input=user_msg, system_prompt=prompt)

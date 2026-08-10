@@ -9,7 +9,7 @@
 [![LangGraph](https://img.shields.io/badge/LangGraph-0.2+-orange.svg)](https://github.com/langchain-ai/langgraph)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.35+-red.svg)](https://streamlit.io)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Last Updated](https://img.shields.io/badge/Last%20Updated-2026.08.09-brightgreen.svg)]()
+[![Last Updated](https://img.shields.io/badge/Last%20Updated-2026.08.10-brightgreen.svg)]()
 
 </div>
 
@@ -376,7 +376,19 @@ math-model-agent/
 
 ## 🆕 更新日志
 
-### 2026.08.09 — 质量门禁与幻觉数据防护（共 4 项）
+### 2026.08.10 — 泛化能力与鲁棒性（共 4 轮迭代）
+
+| 类别 | 变更内容 |
+|------|---------|
+| 🔧 **泛化审查** | 三轮全面审查，移除所有问题特定语言（导弹/无人机/投放时刻/起爆时间/FY1/遮蔽时长/三维轨迹判定等），确保 Agent 可处理任意数学建模问题 |
+| 🔧 **提示词优化** | `coding.py` 新增"代码生成前自检清单"（9 项硬性检查），新增"禁止的代码模式"章节（直接展示必定超时的模式）；多算法对比章节明确"粗搜索+DE≠两种算法" |
+| 🔧 **提示词优化** | 敏感性分析 CSV 输出从"建议"升级为"必须在代码中写入文件"；约束处理章节升级，禁止固定值惩罚（`return 0.0/1e6/1e9`），强调比例惩罚 |
+| 🔧 **运行时增强** | `graph.py` 新增"预执行安全扫描"：检测嵌套深度、DE/PSO 参数、时间步长、固定值惩罚违规；"未收敛"检测从一刀切改为分级（全部→P0，≥3个→P0，个别→P1） |
+| 🐛 **Bug 修复** | 修复 `verifier.py` NaN 误报：排除"无NaN"、"未检测到NaN"等否定表述 |
+| 🐛 **Bug 修复** | 修复 P2 门禁代码截断问题：8000→16000 字符，新增超时场景特别说明 |
+| 🐛 **Bug 修复** | 修复超时诊断误报：嵌套循环计数改为基于缩进的实际最大嵌套深度 |
+
+### 2026.08.09 — 聚焦问题与幻觉数据防护（共 4 项）
 
 | 类别 | 变更内容 |
 |------|---------|

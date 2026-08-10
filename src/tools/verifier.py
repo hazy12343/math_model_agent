@@ -225,10 +225,13 @@ class NumericalVerifier:
             nan_in_output = False
             for line in lines:
                 line_lower = line.lower()
+                # 排除"无NaN"、"无nan"、"no NaN"等否定表述
+                if any(neg in line_lower for neg in ("无nan", "无 nan", "no nan", "no  nan", "未检测到nan", "未发现nan")):
+                    continue
                 for kw in nan_keywords:
                     if kw in line_lower:
                         # 检查是否包含数值上下文
-                        if any(c in line for c in ("=", ":", "结果", "value", "output", "T_cover", "遮蔽")):
+                        if any(c in line for c in ("=", ":", "结果", "value", "output")):
                             nan_in_output = True
                             break
             if nan_in_output:
@@ -256,7 +259,7 @@ class NumericalVerifier:
             "self_consistent": len(findings) == 0,
         }
 
-    def sensitivity_check(self, results: str) -> Dict[str, Any]:
+    def sensitivity_check(self, results: str, code: str = "") -> Dict[str, Any]:
         """检查敏感性分析结果的合理性"""
         findings = []
 
@@ -268,8 +271,10 @@ class NumericalVerifier:
 
         csv_pattern = r'sensitivity.*?\.csv'
         has_csv = bool(re.search(csv_pattern, results, re.IGNORECASE))
+        if not has_csv and code:
+            has_csv = bool(re.search(csv_pattern, code, re.IGNORECASE))
         if not has_csv and has_sensitivity:
-            findings.append("P2-缺失: 敏感性分析未输出CSV文件")
+            findings.append("P2-缺失: 敏感性分析未输出CSV文件（请确保代码中输出 'sensitivity.csv' 字样）")
 
         status = "PASS" if not any("P0" in f for f in findings) else "FAIL"
         return {

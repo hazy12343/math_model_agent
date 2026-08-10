@@ -171,14 +171,27 @@ def _preview_text(file_path: str):
 
 
 def render_step_problem():
-    problem_text = st.text_area(
-        "输入题目描述",
-        height=180,
-        placeholder="在此粘贴题目内容，或描述你的问题...",
-        key="step_problem_input",
-        label_visibility="collapsed",
-    )
-    return problem_text
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        problem_text = st.text_area(
+            "输入题目描述",
+            height=180,
+            placeholder="在此粘贴题目内容，或描述你的问题...",
+            key="step_problem_input",
+            label_visibility="collapsed",
+        )
+    with col2:
+        st.markdown("#### 聚焦问题")
+        focus_question = st.text_input(
+            "只做第几问？",
+            value=st.session_state.get("focus_question", ""),
+            placeholder="如：5  或  1-3  或  全部",
+            help="留空=全部子问题。输入题号可只做指定问题，如：\"5\"（只做第5问）、\"1-3\"（做第1-3问）",
+            key="step_focus_input",
+            label_visibility="collapsed",
+        )
+        st.caption("💡 留空则处理全部子问题")
+    return problem_text, focus_question
 
 
 def render_step_mode():

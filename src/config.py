@@ -26,10 +26,13 @@ class AppConfig:
     enable_multi_model_compare: bool = True
     enable_trap_detection: bool = True
     enable_innovation_guidance: bool = True
-    enable_national_competition_mode: bool = False
+    enable_national_competition_mode: bool = True
     min_figure_count: int = 8
-    min_algorithm_count: int = 2
+    min_algorithm_count: int = 3
     auto_syntax_repair: bool = True
+    result_quality_threshold: float = 0.10
+    monte_carlo_success_rate: float = 0.60
+    coverage_threshold: float = 0.80
     subagents: dict = field(default_factory=lambda: {
         "official_rules": False,
         "attachment_inventory": False,

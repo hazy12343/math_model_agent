@@ -39,6 +39,100 @@ init → modeling → m1_check → coding_p1 → p1_check → coding_full
 | W1 | 证据大纲门禁 | 代码执行失败时自动FAIL |
 | W2 | 论文终检 | 代码执行失败时自动FAIL |
 
+### 2026-08-14: 代码审查 — 13 处 Bug 修复
+- 问题1: `_build_initial_state()` 缺少 `code_exec_success` 和 `exec_error` 字段，单阶段工作流状态不完整
+- 修复: app.py 新增两个字段初始值
+- 问题2/3: `_check_result_plausibility` 零值检测正则是问题特定的（`总[遮蔽时]`），且非零值正则需要小数点，遗漏整数结果
+- 修复: 零值检测移除问题特定关键词 `总[遮蔽时]`，扩展为 `target|objective`；非零值检测改为 `[1-9]\d*(?:\.\d+)?` 支持整数
+- 涉及: graph.py
+- 问题4: detector.py `detect_result_anomalies` 有相同的零值检测正则问题
+- 修复: 同步修复，与 graph.py 保持一致
+- 涉及: detector.py
+- 问题5: verifier.py `cross_validation` NaN 否定表述过滤不完整，缺少 "nan not found"、"no NaN values"、"all values are valid" 等
+- 修复: 扩展否定表述列表至 15 项
+- 涉及: verifier.py, detector.py
+- 问题6: `error_analysis_node` 全零检测 regex `\d+\.\d+` 只匹配浮点数，遗漏整数零
+- 修复: 改为 `\d+(?:\.\d+)?` 同时匹配整数和浮点数
+- 涉及: graph.py
+- 问题7: `_check_result_plausibility` 警告编号重复（两个"10."）
+- 修复: 重新编号为 10/11/12
+- 涉及: graph.py
+- 问题8: `model_comparison_node` 和 `error_analysis_node` 中 `raw_exec = state.get("raw_exec_output", exec_output)` 若值为 None 则后续 `.lower()` 崩溃
+- 修复: 改为 `state.get("raw_exec_output") or exec_output`
+- 涉及: graph.py
+- 问题9: `model_comparison_node` 对比表格硬编码 "s" 单位
+- 修复: 移除单位后缀，仅输出数值
+- 涉及: graph.py
+- 问题10: `code_exec_node` PSO 迭代检测使用 `for...range(N)` 匹配任意循环，且 `pso_iters_match` 结果未被使用
+- 修复: 改为匹配变量名 `n_iterations|max_iter|pso_iters|iterations|n_iter`，移除通用 range 回退
+- 涉及: graph.py
+- 问题11: coding.py 使用中文变量名 `图分类`
+- 修复: 改为 `figure_category_count`
+- 涉及: coding.py
+- 问题12: diagnose.py 算法检测仅检查中文名，遗漏 DE/PSO/GA/SA/ACO/TS 等
+- 修复: 扩展关键词列表至 20 项（含英文缩写和中文名）
+- 涉及: diagnose.py
+- 问题13: detector.py NaN 检测缺少否定表述过滤（之前只在 verifier.py 修复）
+- 修复: 新增自检标签行跳过和否定表述过滤
+- 涉及: detector.py
+
+### 2026-08-14: 基于 projects 产物的优化 — 负值检测 + 适应度函数 + 模型对比解析
+- 问题1: P2 门禁未检测到负值结果（-56170.97s），`_check_result_plausibility` 缺少负值检测
+- 修复: 新增负值检测（#2），使用正则匹配 `(?:最优|best|total|...).*?[=:：]\s*-\d+`，全部负值→P0，部分负值→P1
+- 涉及: graph.py
+- 问题2: detector.py 负值检测仅检查关键词"负值"，不检测实际负值数字
+- 修复: 新增 #3.5 实际负值数字检测，使用与 graph.py 一致的正则
+- 涉及: detector.py
+- 问题3: 误差分析节点在负值结果时仍生成详细数值估计（`pass  # negative values are fine`）
+- 修复: 新增负值检测分支，检测到负值时输出诊断建议而非编造数据；移除"negative values are fine"注释
+- 涉及: graph.py (error_analysis_node)
+- 问题4: 模型对比表解析错误——"s" 单独成列（如 `| 模型A | -56170.97 | s |`）
+- 修复: `_extract_comparison_table` 格式1新增数字+单位合并逻辑，将 "s" 与前面的数字合并
+- 涉及: graph.py
+- 问题5: 适应度函数 `-(raw - penalty)` 符号错误未被检测，导致优化器走向错误方向
+- 修复: coding.py 新增"适应度函数符号设计"章节，展示正确/错误写法及原理；预执行扫描新增 `return -(var - var)` 模式检测；quality.py P2 门禁新增符号错误检测
+- 涉及: coding.py, graph.py, quality.py
+- 问题6: 图表仅输出 PNG 格式，缺少 SVG 矢量图
+- 修复: coding.py 输出格式要求改为"同时保存 PNG 和 SVG 格式"；自检清单新增 SVG 项
+- 涉及: coding.py
+
+### 2026-08-14: 二轮产物审查 — NaN 误报 + 收敛检测 + MC std=0 + 对比表清洗
+- 问题1: 误差分析误报"全部 NaN"——`[NaN/Inf] False` 行含 "NaN" 触发 `all_nan=True`，实际结果有效
+- 修复1: `error_analysis_node` 和 `_check_result_plausibility` 的 NaN 检测增加自检标签排除逻辑（`[xxx检查]`/`[xxx检测]` + 否定表述 `False/false/无/未检测/not found`）
+- 涉及: graph.py
+- 问题2: 验证器不认"收敛代数=10"——`convergence_check` 的 `converge_state_keywords` 缺少"收敛代数"
+- 修复2: 新增"收敛代数"/"收敛于"/"最终适应度"/"final fitness" 关键词
+- 涉及: verifier.py
+- 问题3: 蒙特卡洛 std=0.0000 未告警——所有扰动结果相同，说明扰动无效或目标函数平坦
+- 修复3: `_check_result_plausibility` 新增 MC std=0 检测（正则匹配 `std=0.0`）
+- 涉及: graph.py
+- 问题4: 对比表"结果=0.000334"含标签前缀——`_extract_comparison_table` 格式1未剥离值前缀
+- 修复4: 新增值前缀清洗逻辑（剥离"结果="/"值="/"最优值="/"耗时="/"收敛代数="等前缀）；格式2新增 `=` 分隔符支持
+- 涉及: graph.py
+- 问题5: 模型对比节点数值提取失败——`结果=0.000334` 使用 `=` 分隔符，正则只匹配 `[：:]`
+- 修复5: `model_comparison_node` 的 5 个提取正则全部新增 `=` 分隔符选项
+- 涉及: graph.py
+- 问题6: 算法对比输出格式不灵活——prompt 只规定"耗时(s)"列，实际代码输出"收敛代数"
+- 修复6: coding.py 对比格式说明新增"收敛代数"作为合法替代列，并给出格式示例
+- 涉及: coding.py
+- 问题7: MC 乘法扰动在参数≈0 时失效——`param * (1.0 ± 0.05)` 在零值附近扰动幅度趋近于零
+- 修复7: coding.py MC 验证章节新增扰动方式注意事项（优先加法扰动、不同量级用不同 scale）
+- 涉及: coding.py
+- 问题8: 自检清单缺少 MC 扰动方式和算法对比格式检查
+- 修复8: 自检清单新增 2 项——MC 扰动方式、算法对比格式
+- 涉及: coding.py
+
+### 2026-08-14: 论文公式格式规范 — \frac12 / \text / 范数 / 编号
+- 问题1: `\frac12` 简写不规范——`\frac12 g\tau^2` 虽能编译但不符 LaTeX 规范，跨编译器兼容性差
+- 修复1: 写作规范新增"分数必须使用完整形式 `\frac{分子}{分母}`"规则
+- 问题2: `\text{...}` 需要 amsmath 宏包——`\mathbf P^{\text{drop}}` 可移植性差
+- 修复2: 统一要求使用 `\mathrm{...}` 替代 `\text{...}`（纯数学上下文中）
+- 问题3: 范数用 `||x||` 双竖线——LaTeX 中双竖线间距不正确
+- 修复3: 统一要求使用 `\lVert ... \rVert` 或 `\left\| ... \right\|`
+- 问题4: 全文独立公式缺少编号——无法在正文中引用"由式(3)可得..."
+- 修复4: 新增"所有独立公式必须编号"规则
+- 涉及: writing.py, 写作规范.md, LaTeX格式规范.md
+
 ## 已修复问题记录
 
 ### 2026-08-09: 聚焦问题 + 全零值结果放行 + 误差分析幻觉 + 提示词泛化
@@ -107,6 +201,32 @@ init → modeling → m1_check → coding_p1 → p1_check → coding_full
 - 问题: 上轮泛化后，编码提示词和技能参考文档中仍有 10 处残留的问题特定语言（无人机、导弹、投放时刻、起爆时间、FY1、遮蔽时长、三维轨迹判定等）
 - 修复: 逐文件替换为通用术语——禁止模式2示例改为"资源节点/目标任务/参数维度"；嵌套循环调用链示例改为"node/task/simulate"；惩罚函数示例改为"t_start/t_end"；资源分配示例改为"节点A/B/C"；"轨迹图"→"场景图"；"投放时刻×延迟"→"时间点×参数值"；技能文档同步泛化
 - 涉及: coding.py（6处）, quality.py（1处）, 工作流程.md（1处）, 章节模板.md（1处）
+
+### 2026-08-10: 算法检测误报 + 假验证模式检测 + 浮点比较误报
+- 问题1: P1-多算法 误报"未检测到多种算法对比"——LLM 输出"双层优化(GA+PSO)"和"差分进化(DE)"，但算法关键词列表缺少 GA/PSO/DE/差分进化/双层优化等缩写
+- 问题2: P1-浮点比较 误报——正则 `==\s*[\d.]+` 误匹配 `len(t_points) == 0` 等整数比较
+- 问题3: 敏感性分析是假的——`change_pct = (shield - 10.0) / 10.0 * 100` 硬编码基线值 10.0
+- 问题4: 收敛曲线是假的——`history = [best_shield * (i/10) for i in range(1, 11)]` 合成直线
+- 问题5: 蒙特卡洛验证只覆盖部分参数——`monte_carlo_validation(best_params[:4])` 只取前4个参数
+- 修复1（graph.py）: 3 处算法关键词列表扩展——新增 GA/PSO/DE/SA/ACO/TS/差分进化/双层优化/蚁群/禁忌搜索/爬山 等缩写和中文名；`_extract_comparison_table` 格式1关键词新增差分/进化/双层/两层/蚁群/禁忌
+- 修复2（detector.py）: 浮点比较检测改为只匹配浮点数字面量（含小数点），排除纯整数比较
+- 修复3（graph.py）: `_check_result_plausibility` 新增假敏感性分析检测（正则匹配硬编码基线值）和假收敛曲线检测（正则匹配合成直线）
+- 修复4（coding.py）: 新增"禁止的验证模式"章节（V1-硬编码基线/V2-合成收敛曲线/V3-部分参数蒙特卡洛）；自检清单新增 3 项（基线值/收敛记录/参数覆盖）
+- 涉及: graph.py, detector.py, coding.py
+
+### 2026-08-11: 零值检测误报 — 部分零值误判为算法全部失败
+- 问题: 3 个导弹中 M1 产出 5.00s 遮蔽，但 M2/M3 为零 → P0-算法失败 误报。当前检测逻辑是"发现任一零值即 P0"，应改为"全部零值→P0，部分零值→P1"
+- 修复: graph.py `_check_result_plausibility` 和 detector.py `detect_result_anomalies` 的零值检测改为分级——同时统计零值和非零值结果数，全部零→P0，零值多于非零值→P1，多数非零→不告警
+- 涉及: graph.py, detector.py
+
+### 2026-08-11: 诊断词污染 + 零值跳过输出缺失
+- 问题1: "负值检查"误报 — `[负值检查] 遮蔽时间均为正: False` 是自检标签，detector 因含"负值"关键词误判为数值异常
+- 问题2: 收敛性分析误报 — `[结果合理性检测]` 的诊断警告 "P1-收敛性: 未检测到收敛性判断，**迭代**类算法..." 含"迭代"关键词，verifier 误判为"有收敛性分析但不完整"
+- 问题3: 零值跳过导致输出缺失 — 代码用 `if base_shield > 0:` 跳过敏感性分析（无 CSV）、蒙特卡洛验证、收敛曲线图，导致图表数不足、无 sensitivity.csv
+- 修复1（detector.py）: 负值检测跳过 `[xxx检查]`/`[xxx检测]` 格式的自检标签行
+- 修复2（verifier.py）: convergence_check 过滤掉 `⚠️ P0-`/`⚠️ P1-` 诊断警告行和 `[结果合理性检测]` 节标题，仅分析代码实际输出
+- 修复3（coding.py）: 新增"零值保护与输出完整性"要求——禁止 `if base > 0:` 跳过敏感性/蒙特卡洛/收敛曲线，即使结果为零也须生成全部图表和 CSV；自检清单新增零值保护项
+- 涉及: detector.py, verifier.py, coding.py
 
 ### 2026-08-07: 代码执行失败 → 论文幻觉数据
 - 问题: 代码崩溃后，论文手编造了所有数值

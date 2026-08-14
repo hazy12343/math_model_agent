@@ -188,7 +188,11 @@ def diagnose(project_dir: Path) -> str:
 
         # 检查多算法
         algo_count = 0
-        for kw in ["网格搜索", "遗传算法", "粒子群", "模拟退火", "梯度下降"]:
+        for kw in ["网格搜索", "遗传算法", "粒子群", "模拟退火", "梯度下降",
+                     "differential_evolution", "genetic", "pso", "particle_swarm",
+                     "simulated_annealing", "ant_colony", "aco", "tabu_search",
+                     "差分进化", "蚁群", "禁忌搜索", "爬山", "hill_climbing",
+                     "双层优化", "double_layer", "two_stage"]:
             if kw in code:
                 algo_count += 1
         if algo_count >= 2:

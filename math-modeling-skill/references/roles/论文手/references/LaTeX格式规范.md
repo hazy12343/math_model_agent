@@ -19,6 +19,17 @@
 ## 公式、图表和引用
 
 - 公式保留为原生 LaTeX，并在实际编译 PDF 中检查换行、编号和字体。
+
+### 公式格式细则
+
+- **分数**：必须使用完整形式 `\frac{分子}{分母}`，禁止 `\frac12`、`\frac1n` 等简写
+- **下标/上标文字**：使用 `\mathrm{...}` 而非 `\text{...}`（`\text` 依赖 amsmath，可移植性差）
+  - 正确：`\mathbf P^{\mathrm{drop}}_{j,k}`、`T_{\mathrm{cover},i}`
+  - 错误：`\mathbf P^{\text{drop}}_{j,k}`
+- **范数**：使用 `\lVert ... \rVert` 或 `\left\| ... \right\|`，禁止 `||x||`
+- **向量/矩阵**：使用 `\mathbf{v}` 或 `\boldsymbol{v}`（希腊字母必须用 `\boldsymbol`）
+- **微分算子**：使用 `\mathrm{d}` 而非 `d`
+- **公式编号**：所有独立公式必须编号，正文中用编号引用
 - 每幅图和每个表都有题注、真实内容与 `label`，正文在浮动环境外至少一次使用 `ref`、`autoref` 或同类命令引用；空环境不计图表。
 - 每个子问题至少有一幅正式结果图，标签使用 `fig:q1-*`、`fig:q2-*` 等可校验格式，并在质量校验命令中通过 `--questions` 完整声明。
 - 图只使用编程手真实生成的文件；可保留 SVG 源图，但 LaTeX 安全编译链只直接引用同源导出的 PDF、PNG、JPG/JPEG，不依赖 shell escape 临时转换 SVG/EPS。

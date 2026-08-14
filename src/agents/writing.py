@@ -41,8 +41,18 @@ class WritingAgent(BaseAgent):
 # 核心任务
 1. 读取题目、建模分析、代码结果和图表
 2. 建立 Claim-Evidence 映射
-3. 撰写完整论文
-4. 默认同时生成 Word 和 LaTeX/PDF 两种格式
+3. 撰写完整论文（Markdown 格式，公式使用标准 LaTeX 语法）
+4. 论文末尾附 Pandoc 转换命令，方便一键生成 Word 文档
+
+# Word 格式生成说明
+- 你输出的是 Markdown 文件，公式使用 LaTeX 语法（`$...$` 行内、`$$...$$` 独立）
+- **LaTeX 公式可以零修改转换为 Word 公式**：使用 Pandoc 命令即可自动转换，无需手动编辑
+- 论文末尾必须输出以下转换命令（根据实际文件名调整）：
+  ```
+  [Word转换]
+  pandoc 完整论文.md -o 完整论文.docx --from markdown --to docx --mathjax
+  ```
+- 转换后 `\mathbf` → Word 粗体、`\mathrm` → Word 正体、`\frac{{}}{{}}` → Word 分数、`\sum` → Word 求和符号，全部自动完成
 
 # 重要规则
 - 所有结论必须有真实数据支撑
@@ -88,6 +98,56 @@ class WritingAgent(BaseAgent):
 - 参考文献格式：[编号] 作者. 标题. 期刊/出版社, 年份.
 - 可以使用 `paper_search` 工具搜索相关学术文献
 - 题目给出的基本物理定律和数学公式属于已知常识，无需引用外部文献
+""")
+        parts.append("""
+# LaTeX 公式格式规范（关键！）
+论文中所有数学公式必须遵循以下格式要求：
+
+## 公式分隔符
+- **行内公式**：使用 `$...$`（LaTeX 中）或 `\\(...\\)`（Markdown 中）
+- **独立公式（display math）**：使用 `$$...$$`（Markdown 中推荐）或 `\\[...\\]`（LaTeX 中）
+- 长公式需要换行时使用 `\\begin{aligned}` 等环境
+
+## 公式编号（重要！）
+- **所有独立公式必须编号**，格式为 `(1)`、`(2)`、`(3)`...
+- 在 Markdown 中：`$$ ... \\tag{1} $$`
+- 在 LaTeX 中：`\\begin{equation} ... \\label{eq:xxx} \\end{equation}`
+- 正文中引用公式时使用编号，如"由式(3)可得..."
+
+## 下标/上标中的文字
+- 使用 `\\mathrm{...}` 而非 `\\text{...}`（`\\text` 需要 amsmath 宏包，可移植性差）
+- 正确：`\\mathbf P^{\\mathrm{drop}}_{j,k}`、`T_{\\mathrm{cover},i}`
+- 错误：`\\mathbf P^{\\text{drop}}_{j,k}`、`T_{\\text{cover},i}`
+
+## 分数
+- 必须使用完整形式 `\\frac{分子}{分母}`，禁止简写
+- 正确：`\\frac{1}{2}`、`\\frac{\\partial f}{\\partial x}`
+- 错误：`\\frac12`、`\\frac1n`（虽然某些编译器能解析，但不符合 LaTeX 规范，且跨编译器兼容性差）
+
+## 范数/绝对值
+- 使用 `\\lVert ... \\rVert` 表示范数，`\\lvert ... \\rvert` 表示绝对值
+- 或使用 `\\left\\| ... \\right\\|` / `\\left| ... \\right|`
+- 正确：`\\lVert \\mathbf{M}_{i0} \\rVert`
+- 避免：`||\\mathbf{M}_{i0}||`（双竖线间距不正确）
+
+## 向量/矩阵
+- 向量使用 `\\mathbf{v}` 或 `\\boldsymbol{v}`（希腊字母必须用 `\\boldsymbol`）
+- 矩阵使用 `\\mathbf{A}` 或 `\\boldsymbol{A}`
+- 转置使用 `^{\\mathsf{T}}` 或 `^{\\top}`
+
+## 常见符号
+- 微分算子：`\\mathrm{d}` 而非 `d`（如 `\\int f(x) \\,\\mathrm{d}x`）
+- 自然对数底：`\\mathrm{e}` 而非 `e`（当表示常数时）
+- 虚数单位：`\\mathrm{i}` 而非 `i`
+- 最大化/最小化：`\\max`、`\\min`（正体），下标用 `\\max_{x \\in X}`
+- 求和/求积：`\\sum_{i=1}^{n}`、`\\prod_{i=1}^{n}`
+
+## 禁止模式
+- ❌ `\\frac12` → ✅ `\\frac{1}{2}`
+- ❌ `\\text{xxx}` 在纯数学上下文中 → ✅ `\\mathrm{xxx}`
+- ❌ `||x||` 表示范数 → ✅ `\\lVert x \\rVert`
+- ❌ 独立公式不加编号 → ✅ 所有独立公式加编号
+- ❌ 中文出现在数学模式中 → ✅ 中文放在公式外，用 `\\text{中文}` 仅限必要情况
 """)
         return "\n".join(parts)
 

@@ -80,15 +80,36 @@ class NumericalVerifier:
 
     def _infer_dimensions(self, info: Dict) -> Dict:
         result = {}
-        raw = info.get("raw_value", "")
+        raw = info.get("raw_value", "").lower()
 
-        if "m/s" in raw.lower():
-            result["unit"] = "m/s"
-            result["expected_unit"] = "m/s"
-        elif "m^2" in raw.lower():
-            result["unit"] = "m^2"
-            result["expected_unit"] = "m^2"
-        elif raw.endswith("m") and not any(c in raw for c in ("cm", "km", "mm")):
+        # 复合单位优先匹配
+        unit_patterns = [
+            (r'm/s', 'm/s'),
+            (r'm\^2', 'm^2'),
+            (r'm\^3', 'm^3'),
+            (r'km/h', 'km/h'),
+            (r'rad/s', 'rad/s'),
+            (r'm/s\^2', 'm/s^2'),
+            (r'kg/m\^3', 'kg/m^3'),
+            (r'j\b', 'J'),
+            (r'w\b', 'W'),
+            (r'n\b', 'N'),
+            (r'pa\b', 'Pa'),
+            (r'hz\b', 'Hz'),
+            (r'deg\b', 'deg'),
+            (r'g\b', 'g'),
+            (r'ms\b', 'ms'),
+            (r'min\b', 'min'),
+            (r'h\b', 'h'),
+        ]
+        for pat, unit in unit_patterns:
+            if re.search(pat, raw):
+                result["unit"] = unit
+                result["expected_unit"] = unit
+                return result
+
+        # 简单单位（检查后缀）
+        if raw.endswith("m") and not any(c in raw for c in ("cm", "km", "mm", "nm", "um", "dm")):
             result["unit"] = "m"
             result["expected_unit"] = "m"
         elif raw.endswith("s") and not raw.endswith("ms"):
@@ -107,26 +128,78 @@ class NumericalVerifier:
         result = {}
         name_lower = name.lower()
 
-        if any(kw in name_lower for kw in ("speed", "velocity", "速度", "速率", "vx", "vy", "vz")):
+        # 速度/速率
+        if any(kw in name_lower for kw in ("speed", "velocity", "速度", "速率", "vx", "vy", "vz", "v_")):
             result["unit"] = "m/s"
             result["expected_unit"] = "m/s"
-        elif any(kw in name_lower for kw in ("area", "面积", "区域")):
+        # 加速度
+        elif any(kw in name_lower for kw in ("acceleration", "accel", "加速度", "ax", "ay", "az", "a_")):
+            result["unit"] = "m/s^2"
+            result["expected_unit"] = "m/s^2"
+        # 面积
+        elif any(kw in name_lower for kw in ("area", "面积", "区域", "surface")):
             result["unit"] = "m^2"
             result["expected_unit"] = "m^2"
-        elif any(kw in name_lower for kw in ("distance", "length", "width", "height", "depth",
-                                                "距离", "长度", "宽度", "高度", "深度",
-                                                "x", "y", "z", "pos", "position", "radius", "r")):
+        # 体积
+        elif any(kw in name_lower for kw in ("volume", "体积", "容积", "vol")):
+            result["unit"] = "m^3"
+            result["expected_unit"] = "m^3"
+        # 距离/长度/坐标
+        elif any(kw in name_lower for kw in (
+            "distance", "length", "width", "height", "depth", "altitude",
+            "距离", "长度", "宽度", "高度", "深度", "海拔",
+            "x", "y", "z", "pos", "position", "radius", "r", "range",
+            "coordinate", "坐标", "offset", "偏移", "span", "跨度",
+        )):
             result["unit"] = "m"
             result["expected_unit"] = "m"
-        elif any(kw in name_lower for kw in ("time", "duration", "时间", "时长", "period", "t", "dt")):
+        # 时间
+        elif any(kw in name_lower for kw in (
+            "time", "duration", "时间", "时长", "period", "t", "dt",
+            "timestamp", "时刻", "interval", "间隔", "delay", "延迟",
+            "start", "end", "开始", "结束", "window", "窗口",
+        )):
             result["unit"] = "s"
             result["expected_unit"] = "s"
-        elif any(kw in name_lower for kw in ("mass", "质量", "weight", "重量", "m_")):
+        # 质量
+        elif any(kw in name_lower for kw in ("mass", "质量", "weight", "重量", "m_", "payload")):
             result["unit"] = "kg"
             result["expected_unit"] = "kg"
-        elif any(kw in name_lower for kw in ("angle", "角度", "theta", "alpha", "beta", "gamma", "phi")):
+        # 角度
+        elif any(kw in name_lower for kw in (
+            "angle", "角度", "theta", "alpha", "beta", "gamma", "phi",
+            "delta", "epsilon", "omega", "azimuth", "方位", "elevation", "仰角",
+            "pitch", "roll", "yaw", "heading", "航向", "direction", "方向",
+        )):
             result["unit"] = "rad"
             result["expected_unit"] = "rad"
+        # 力
+        elif any(kw in name_lower for kw in ("force", "力", "thrust", "推力", "drag", "阻力", "lift", "升力", "f_")):
+            result["unit"] = "N"
+            result["expected_unit"] = "N"
+        # 能量/功率
+        elif any(kw in name_lower for kw in ("energy", "能量", "power", "功率", "work", "功", "p_", "e_")):
+            result["unit"] = "J"
+            result["expected_unit"] = "J"
+        elif any(kw in name_lower for kw in ("power", "功率", "watt", "瓦")):
+            result["unit"] = "W"
+            result["expected_unit"] = "W"
+        # 密度
+        elif any(kw in name_lower for kw in ("density", "密度", "rho", "concentration", "浓度")):
+            result["unit"] = "kg/m^3"
+            result["expected_unit"] = "kg/m^3"
+        # 频率
+        elif any(kw in name_lower for kw in ("frequency", "频率", "freq", "hz", "f_")):
+            result["unit"] = "Hz"
+            result["expected_unit"] = "Hz"
+        # 概率/比率（无量纲）
+        elif any(kw in name_lower for kw in (
+            "probability", "概率", "ratio", "比率", "rate", "率",
+            "percentage", "百分比", "pct", "percent", "proportion", "比例",
+            "efficiency", "效率", "coverage", "覆盖率", "utilization", "利用率",
+        )):
+            result["unit"] = "dimensionless"
+            result["expected_unit"] = "dimensionless"
 
         return result
 
@@ -226,7 +299,7 @@ class NumericalVerifier:
             for line in lines:
                 line_lower = line.lower()
                 # 排除"无NaN"、"无nan"、"no NaN"等否定表述
-                if any(neg in line_lower for neg in ("无nan", "无 nan", "no nan", "no  nan", "未检测到nan", "未发现nan")):
+                if any(neg in line_lower for neg in ("无nan", "无 nan", "无 nan ", "无nan值", "nan not found", "no nan", "no  nan", "no nan值", "未检测到nan", "未发现nan", "所有.*无nan", "no nan values", "all values are valid", "所有值有效")):
                     continue
                 for kw in nan_keywords:
                     if kw in line_lower:
@@ -320,16 +393,25 @@ class NumericalVerifier:
         """检查结果中是否包含收敛性分析"""
         findings = []
 
+        # 过滤掉诊断警告行（如 "[结果合理性检测]" 部分的 "P1-收敛性: ..."），
+        # 这些是 Agent 的元诊断，不是代码的实际输出，不应参与收敛性分析
+        filtered_results = "\n".join(
+            line for line in results.split("\n")
+            if not re.match(r'\s*⚠️\s*P[012]-', line)  # 排除 "⚠️ P1-收敛性: ..."
+            and not re.match(r'\s*\[结果合理性检测\]', line)  # 排除节标题
+        )
+
         convergence_keywords = ["收敛", "convergence", "迭代", "iteration", "收敛曲线"]
-        has_convergence = any(kw in results.lower() for kw in convergence_keywords)
+        has_convergence = any(kw in filtered_results.lower() for kw in convergence_keywords)
 
         if not has_convergence:
             findings.append("P2-缺失: 结果中未检测到收敛性分析")
         else:
             # 检查是否给出了收敛状态
             converge_state_keywords = ["已收敛", "converged", "未收敛", "not converged",
-                                        "最大迭代", "max iteration", "改进量", "improvement"]
-            has_state = any(kw in results.lower() for kw in converge_state_keywords)
+                                        "最大迭代", "max iteration", "改进量", "improvement",
+                                        "收敛代数", "收敛于", "最终适应度", "final fitness"]
+            has_state = any(kw in filtered_results.lower() for kw in converge_state_keywords)
             if has_state:
                 findings.append("PASS: 检测到收敛性分析及收敛状态")
             else:

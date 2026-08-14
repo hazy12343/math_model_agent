@@ -170,8 +170,12 @@ class TrapDetector:
         """检测代码中的数值陷阱"""
         findings = []
 
-        if re.search(r'==\s*[\d.]+', code):
+        # 只检测浮点数比较（== 后跟含小数点的数字，如 == 0.0, == 1.5），排除整数比较（== 0, == 1）
+        if re.search(r'==\s*[\d]+\.[\d]+', code):
             findings.append("P1-浮点比较: 代码中使用 == 比较浮点数，应使用 np.isclose() 或容差比较")
+        # 也检测 == 0.0 这种写法
+        if re.search(r'==\s*0\.0\b', code):
+            findings.append("P1-浮点比较: 代码中使用 == 0.0 比较浮点数，应使用 np.isclose() 或容差比较")
 
         if re.search(r'(?:tol|eps|atol|rtol|epsilon|threshold|tolerance)\s*=\s*1e-?\d+', code):
             findings.append("P2-硬编码容差: 代码中硬编码了数值容差（如 tol=1e-6），建议定义为常量并标注选择依据")
@@ -199,68 +203,51 @@ class TrapDetector:
         }
 
     def detect_result_anomalies(self, output: str, code: str) -> Dict[str, Any]:
-        """检测执行结果中的异常模式"""
+        """检测执行结果中的异常模式（量级异常、迭代收敛性等独特检查；零值/NaN/负值等通用检查由 graph._check_result_plausibility 统一处理）"""
         findings = []
         output_lower = output.lower()
 
-        # 1. 检测所有结果全为 0
-        zero_patterns = [
-            r'最优[值解].*?[=:]\s*0\.?0?',
-            r'[=:]\s*0\.0+',
-            r'全部为\s*0',
-        ]
-        zero_count = 0
-        for pat in zero_patterns:
-            zero_count += len(re.findall(pat, output))
-        if zero_count >= 2:
-            findings.append("P0-结果异常: 检测到多个结果为零，可能算法实现有误或约束过强")
-
-        # 2. 检测 NaN/Inf 出现在结果输出中（非代码行）
-        nan_in_output = False
-        for line in output.split("\n"):
-            line_lower = line.lower()
-            if any(kw in line_lower for kw in ["nan", "inf", "-inf"]):
-                if any(c in line for c in ("=", ":", "结果", "value", "output", "最优", "最佳")):
-                    nan_in_output = True
-                    break
-        if nan_in_output:
-            findings.append("P0-数值异常: 结果输出中包含 NaN/Inf 值，代码可能存在除零或数值溢出")
-
-        # 3. 检测结果是否在合理范围内
-        # 提取所有浮点数及其上下文
-        for line in output.split("\n"):
-            line_lower = line.lower()
-            if any(kw in line_lower for kw in ["负值", "负数", "negative", "error", "错误", "失败"]):
-                if any(c in line for c in ("=", ":", "结果", "输出", "value")):
-                    findings.append(f"P1-结果异常: 检测到负值/错误提示: {line.strip()[:80]}")
-                    break
-
-        # 4. 检测迭代类算法的收敛性问题
+        # 1. 检测迭代类算法的收敛性问题（与 graph 收敛检查互补）
         has_iteration = bool(re.search(r'迭代|iteration|代数|generation|epoch', output_lower))
         has_convergence = bool(re.search(r'收敛|converge|converged', output_lower))
         if has_iteration and not has_convergence:
             findings.append("P1-收敛性: 代码包含迭代算法但未输出收敛状态，无法判断是否收敛")
 
-        # 5. 检测蒙特卡洛验证
-        has_mc = bool(re.search(r'蒙特卡洛|monte carlo|随机模拟', output_lower))
-        if not has_mc:
-            findings.append("P1-蒙特卡洛: 未检测到蒙特卡洛验证，国赛建议对关键参数进行随机扰动验证")
-
-        # 6. 检测结果数量级是否合理（对常见物理量）
-        has_distance = bool(re.search(r'距离|distance|位移|disp', output_lower))
-        if has_distance:
-            # 提取距离值
-            dist_values = re.findall(r'(?:距离|distance|位移)[^:]*?[=:]\s*(\d+\.?\d*)', output)
-            if dist_values:
-                for val in dist_values:
+        # 2. 检测结果数量级是否合理（对常见物理量）
+        magnitude_checks = [
+            (r'距离|distance|位移|disp', '距离', 1e6, 1e-6),
+            (r'时间|time|duration|时长', '时间', 1e6, 1e-6),
+            (r'速度|speed|velocity|速率', '速度', 1e5, 1e-6),
+            (r'质量|mass|weight|重量', '质量', 1e6, 1e-6),
+            (r'面积|area|区域', '面积', 1e8, 1e-6),
+            (r'体积|volume|容积', '体积', 1e9, 1e-9),
+            (r'角度|angle|theta|alpha|beta', '角度', 360, 0),
+            (r'概率|probability|prob', '概率', 1.0, 0.0),
+        ]
+        for pattern, label, upper, lower in magnitude_checks:
+            if re.search(pattern, output_lower):
+                values = re.findall(rf'(?:{pattern})[^:]*?[=:：]\s*(\d+\.?\d*(?:e[+-]?\d+)?)', output)
+                for val in values:
                     try:
                         fval = float(val)
-                        if fval > 1e6:
-                            findings.append(f"P1-量级异常: 距离值 {fval} 过大，可能单位转换错误")
-                        elif fval < 1e-6:
-                            findings.append(f"P1-量级异常: 距离值 {fval} 过小，可能单位转换错误")
+                        if fval > upper:
+                            findings.append(f"P1-量级异常: {label}值 {fval} 过大（> {upper}），可能单位转换错误")
+                        elif fval < lower:
+                            findings.append(f"P1-量级异常: {label}值 {fval} 过小（< {lower}），可能单位转换错误")
                     except ValueError:
                         pass
+
+        # 3. 检测结果中是否有明显的错误/失败标记
+        error_count = 0
+        for line in output.split("\n"):
+            line_lower = line.lower()
+            if re.match(r'\s*\[.*?(?:检查|检测)\]', line):
+                continue
+            if any(kw in line_lower for kw in ["error", "错误", "失败", "exception", "traceback"]):
+                if any(c in line for c in ("=", ":", "结果", "输出", "value")):
+                    error_count += 1
+        if error_count > 0:
+            findings.append(f"P1-执行异常: 检测到 {error_count} 处错误/失败标记，部分结果可能不可靠")
 
         if not findings:
             findings.append("未检测到明显的结果异常")

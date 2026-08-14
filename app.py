@@ -111,6 +111,8 @@ def _build_initial_state() -> dict:
         "code_exec_output": "",
         "raw_exec_output": "",
         "verification_output": "",
+        "code_exec_success": False,
+        "exec_error": None,
         "evidence_outline": st.session_state.workflow_state.get("evidence_outline", ""),
         "paper_output": st.session_state.workflow_state.get("paper_output", ""),
         "error_analysis": st.session_state.workflow_state.get("error_analysis", ""),

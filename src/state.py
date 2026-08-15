@@ -33,6 +33,7 @@ class WorkflowState(TypedDict):
     verification_output: Optional[str]
 
     code_exec_success: bool
+    code_exec_blocked: bool
     exec_error: Optional[str]
 
     evidence_outline: Optional[str]

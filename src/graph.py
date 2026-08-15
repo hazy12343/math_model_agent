@@ -20,24 +20,53 @@ from src.tools.detector import TrapDetector
 
 
 def _extract_code_from_output(text: str) -> str:
-    """从输出中提取所有代码块（支持多文件：单块含 # file: 标记或多块各自为文件）"""
+    """从输出中提取所有代码块（支持多文件：单块含 # file: 标记或多块各自为文件）
+
+    优先级：
+    1. 提取所有 ```python 代码块，合并（支持多块输出）
+    2. 提取所有 ``` 代码块（无语言标记），过滤非 Python 块
+    3. 回退：启发式提取 Python 代码
+    """
     lines = text.split("\n")
     all_code_lines = []
     in_code = False
+    code_lang = ""
+    has_python_blocks = False
+
     for line in lines:
         stripped = line.strip()
         if stripped.startswith("```"):
             if in_code:
                 in_code = False
+                code_lang = ""
                 continue
             else:
                 in_code = True
+                # 提取语言标记
+                lang = stripped[3:].strip().lower()
+                if lang in ("python", "py"):
+                    code_lang = "python"
+                    has_python_blocks = True
+                elif lang in ("json", "bash", "sh", "shell", "yaml", "yml", "markdown", "md", "text", "sql", "r", ""):
+                    code_lang = lang if lang else "unknown"
+                else:
+                    # 未知语言标记，可能是误标注的 Python 代码
+                    code_lang = "unknown"
                 continue
         if in_code:
+            if code_lang in ("json", "bash", "sh", "shell", "yaml", "yml", "markdown", "md", "sql", "r"):
+                continue
             all_code_lines.append(line)
+
     if all_code_lines:
         result = "\n".join(all_code_lines)
         result = _strip_trailing_non_python(result)
+        # 如果不是从明确标记的 python 块提取的，验证是否为有效 Python
+        if not has_python_blocks:
+            if not any(kw in result for kw in ("import ", "def ", "class ", "if __name__", "print(", "=")):
+                heuristic = _extract_python_heuristic(text)
+                if heuristic:
+                    return heuristic
         return result
 
     # 回退：无 markdown 代码块时，用启发式方法提取 Python 代码
@@ -556,15 +585,14 @@ def _validate_code_syntax(code: str) -> str:
 
 # ====== 结果合理性检测辅助函数（从 _check_result_plausibility 拆分） ======
 
-_RESULT_NUM_PAT = re.compile(
-    r'(?:最优|best|total|result|output|值|解|distance|time|cost|score|target|objective)'
-    r'.*?[=:：]\s*([\d.]+(?:e[+-]?\d+)?)(?:\s|$)',
-    re.IGNORECASE
-)
-
 _ALGO_NAME_PAT = re.compile(
     r'(?:随机搜索|遗传算法|粒子群|模拟退火|网格搜索|坐标下降|差分进化|'
-    r'蚁群|禁忌搜索|爬山|贪心|穷举|双层优化|bi-level|two-level)',
+    r'蚁群|禁忌搜索|爬山|贪心|穷举|双层优化|bi-level|two-level|'
+    r'构造启发式|构造|启发式|暴力搜索|暴力|枚举|深度优先|广度优先|A\*|'
+    r'分支定界|线性规划|整数规划|动态规划|梯度下降|牛顿法|共轭梯度|'
+    r'L-BFGS|BFGS|Nelder|Powell|CG|TNC|SLSQP|trust|'
+    r'DE|PSO|GA|SA|Bayes|贝叶斯|神经网络|决策树|SVM|随机森林|'
+    r'XGBoost|LightGBM|KNN|K-means|DBSCAN|谱聚类|层次聚类)',
     re.IGNORECASE
 )
 
@@ -573,18 +601,276 @@ def _check_zero_results(output: str) -> tuple:
     """检测零值结果，返回 (warnings, zero_count, nonzero_count)"""
     warnings = []
     zero_count = len(re.findall(
-        r'(?:最优|best|total|result|output|值|解|distance|time|cost|score|target|objective)'
+        r'(?:最优|best|total|result|output|值|解|distance|time|cost|score|target|objective|'
+        r'时间|分数|代价|收益|遮蔽|覆盖|效率|成功率|准确率)'
         r'.*?[=:：]\s*0(?:\.0+)?',
         output, re.IGNORECASE))
     nonzero_count = len(re.findall(
-        r'(?:最优|best|total|result|output|值|解|distance|time|cost|score|target|objective)'
+        r'(?:最优|best|total|result|output|值|解|distance|time|cost|score|target|objective|'
+        r'时间|分数|代价|收益|遮蔽|覆盖|效率|成功率|准确率)'
         r'.*?[=:：]\s*(?:[1-9]\d*(?:\.\d+)?|0\.[1-9]\d*)',
         output, re.IGNORECASE))
+    # 额外检测：所有导弹/目标均为 0.0 的模式（如 "各导弹遮蔽: {'M1': 0.0, 'M2': 0.0}"）
+    all_zero_targets = re.findall(r"'(M\d|[A-Z][a-z]?\d)':\s*0\.0", output)
+    if all_zero_targets:
+        zero_count += len(all_zero_targets)
+    # 检测 "均为 0" 或 "所有.*?0\.0" 模式
+    if re.search(r'(?:均为|全是|所有|全部).*?(?:0\.0|为\s*0)', output):
+        zero_count = max(zero_count, 1)  # 至少算一个零值
     if zero_count > 0 and nonzero_count == 0:
-        warnings.append("P0-算法失败: 所有算法结果均为 0，可能存在约束过强或算法实现错误")
+        diag = _diagnose_zero_results(output)
+        warnings.append(
+            f"P0-算法失败: 所有算法结果均为 0，{diag}")
     elif zero_count > nonzero_count:
         warnings.append(f"P1-部分零值: {zero_count} 个结果为零，{nonzero_count} 个非零，部分任务/算法可能未找到有效解")
     return warnings, zero_count, nonzero_count
+
+
+def _diagnose_zero_results(output: str) -> str:
+    """诊断全零结果的可能原因，返回诊断文本"""
+    parts = []
+
+    # 检测是否所有资源都未使用
+    if re.search(r'资源利用率.*?0/', output):
+        parts.append("所有资源均未被使用，优化器未找到任何可行分配方案")
+
+    # 检测是否所有目标/任务都未找到有效解
+    all_zero_targets = re.findall(r'(M\d|目标\d|导弹\d|任务\d|节点\d|区域\d).*?(?:未找到有效解|结果=0|值为0)', output)
+    if all_zero_targets:
+        parts.append(f"所有目标({', '.join(all_zero_targets)})均未找到有效解")
+
+    # 检测是否有理论最大值但实际为0（说明搜索策略完全失效）
+    if re.search(r'理论上界.*?(\d+\.?\d*).*总.*?0\.0', output):
+        parts.append("理论最大值存在但实际结果为0，可能原因：a) 核心计算模型（公式/数据/判定条件）有误，b) 约束条件过于严格导致所有候选解不可行，c) 目标函数返回常量")
+
+    # 检测是否运行时间极短（说明优化器未真正工作）
+    time_match = re.search(r'优化耗时.*?(\d+\.?\d*)\s*s', output)
+    if time_match and float(time_match.group(1)) < 1.0:
+        parts.append(f"优化耗时仅{time_match.group(1)}s，优化器可能未真正搜索（目标函数对所有输入返回相同值）")
+
+    # 检测是否所有测试点/单点诊断都返回零（→ 平坦优化景观）
+    # 单点诊断返回 0.0s 表示核心判定函数对所有输入都返回 0
+    if re.search(r'(?:单点诊断|测试点|测试参数).*?(?:0\.0|返回零|均为\s*0)', output, re.IGNORECASE):
+        parts.append(
+            "平坦优化景观: 核心判定函数对所有输入返回相同值(0)，"
+            "优化器无法找到梯度方向。请检查：a) 判定条件是否过于严格(如判定半径在全局尺度空间中占比极低)，"
+            "b) 是否需要改用软化约束(如距离惩罚替代硬阈值)，c) 核心计算公式是否用错参数"
+        )
+
+    if not parts:
+        parts.append("可能原因：约束过强或核心计算模型有误，建议先手动测试一组参数确认核心计算函数能否返回非零值")
+
+    # 检测 NaN 传播（计算过程中出现 NaN 导致所有结果变 NaN）
+    if re.search(r'(?:nan|NaN|NAN)', output) and re.search(r'(?:总|最优|结果|fitness).*?(?:nan|NaN|0\.0)', output, re.IGNORECASE):
+        parts.append("NaN传播: 计算过程中出现NaN导致所有结果无效。"
+                     "请检查：a) 是否有除零操作，b) sqrt/asin等函数是否传入非法参数，"
+                     "c) 是否有未初始化的变量参与计算")
+
+    # 检测 DE 优化器是否因种群大小不足而退化
+    if re.search(r'differential.evolution.*?converged.*?0\.0', output, re.IGNORECASE):
+        parts.append("DE优化器退化: 差分进化算法收敛到0.0，"
+                     "可能原因：a) 种群大小(popsize)过小无法覆盖搜索空间，b) 变异率过低导致早熟收敛")
+
+    # 检测所有算法返回相同结果（算法无法区分优劣）
+    algo_values = re.findall(r'(?:DE|PSO|GA|随机搜索|网格搜索).*?[：:]\s*(\d+\.?\d*)', output)
+    if len(algo_values) >= 2 and len(set(algo_values)) == 1:
+        parts.append(f"算法全同: 所有算法({len(algo_values)}个)返回相同结果{algo_values[0]}，"
+                     "核心计算模型对所有输入返回相同值，优化无法区分优劣")
+
+    return "；".join(parts)
+
+
+def _analyze_function_nesting(func_lines: list, func_name: str, func_start: int,
+                               func_nests: dict, analysis_keywords: str) -> None:
+    """分析单个函数内的嵌套循环深度，区分优化型循环与分析型循环。
+
+    分析型循环（蒙特卡洛/敏感性/绘图等）允许 ≤5 层，
+    优化型循环（搜索/优化/计算）严格 ≤3 层。
+
+    通过检查函数名和函数体内的注释/上下文来判断循环类型，
+    而非仅依赖函数级别的标注。
+    """
+    func_text = "\n".join(func_lines)
+    is_analysis_func = bool(re.search(analysis_keywords, func_text, re.IGNORECASE))
+
+    opt_nest = 0
+    all_nest = 0
+    opt_cnt = 0
+    all_cnt = 0
+
+    for i, line in enumerate(func_lines):
+        stripped = line.strip()
+        if not stripped.startswith("for ") and not stripped.startswith("while "):
+            continue
+
+        indent = len(line) - len(line.lstrip())
+        depth = indent // 4
+        all_cnt += 1
+        all_nest = max(all_nest, depth)
+
+        if is_analysis_func:
+            continue
+
+        context_start = max(0, i - 5)
+        context = "\n".join(func_lines[context_start:i])
+        if re.search(analysis_keywords, context, re.IGNORECASE):
+            continue
+
+        opt_cnt += 1
+        opt_nest = max(opt_nest, depth)
+
+    func_nests[(func_name, func_start)] = (opt_nest, all_nest, opt_cnt, all_cnt)
+
+
+def _detect_llm_code_bugs(code: str) -> List[str]:
+    """检测 LLM 生成代码中的常见 Bug 模式（未定义变量、死代码、逻辑错误等）。
+
+    这些模式在 LLM 生成代码中高频出现，且往往在语法检查阶段无法发现
+    （因为语法正确），但在运行时会触发 NameError 或产生错误结果。
+    """
+    warnings = []
+
+    # 1. 检测未定义变量：在 for 循环或 if 条件中使用未定义的变量
+    # 常见模式：LLM 在编写时引用了一个在前文未定义/拼写错误的变量名
+    undefined_patterns = [
+        # 模式：any(len(seg) for seg in []) — 对空列表字面量迭代
+        (r'(?:any|all)\s*\(.*?\bfor\s+\w+\s+in\s+\[\s*\]', "对空列表字面量 [] 迭代（死代码，永远为空）"),
+        # 模式：在循环外使用循环变量（如 segments_exist 未定义）
+        (r'\bsegments_exist\b', "使用了未定义的变量 segments_exist（常见 LLM 幻觉）"),
+        # 模式：if var is False / if var == False 但 var 可能未定义
+        (r'if\s+\w+\s+is\s+False\s*:', "使用 is False 比较可能为 None 的变量，建议用 if not var"),
+    ]
+    for pattern, msg in undefined_patterns:
+        if re.search(pattern, code):
+            warnings.append(f"⚠️ LLM代码Bug: {msg}")
+
+    # 2. 检测函数参数默认值与调用不一致
+    # 如 def random_search(bounds, trials=200) 但调用时 random_search(bounds, trials=300)
+    func_defs = {}
+    for m in re.finditer(r'def\s+(\w+)\s*\(([^)]*)\)', code):
+        func_name = m.group(1)
+        params_str = m.group(2)
+        defaults = {}
+        for pm in re.finditer(r'(\w+)\s*=\s*(\d+(?:\.\d+)?)', params_str):
+            defaults[pm.group(1)] = pm.group(2)
+        func_defs[func_name] = defaults
+
+    for func_name, defaults in func_defs.items():
+        if not defaults:
+            continue
+        for m in re.finditer(rf'{func_name}\s*\([^)]*\)', code):
+            call_str = m.group(0)
+            for param, default_val in defaults.items():
+                kw_pattern = rf'{param}\s*=\s*(\d+(?:\.\d+)?)'
+                kw_match = re.search(kw_pattern, call_str)
+                if kw_match and kw_match.group(1) != default_val:
+                    warnings.append(
+                        f"⚠️ LLM代码Bug: {func_name}() 的 {param} 默认值={default_val}，"
+                        f"但调用时传入 {kw_match.group(1)}，参数不一致可能导致预期外行为"
+                    )
+
+    # 3. 检测条件永远为真/假的模式
+    always_false_patterns = [
+        (r'if\s+any\s*\(.*?\bfor\s+\w+\s+in\s+\[\s*\]\s*\)', "any() 对空列表迭代，条件永远为 False"),
+        (r'if\s+all\s*\(.*?\bfor\s+\w+\s+in\s+\[\s*\]\s*\)', "all() 对空列表迭代，条件永远为 True（空真）"),
+        (r'if\s+False\s*:', "if False: 条件永远不成立（死代码）"),
+        (r'if\s+True\s*:', "if True: 条件永远成立（无意义分支）"),
+    ]
+    for pattern, msg in always_false_patterns:
+        if re.search(pattern, code):
+            warnings.append(f"⚠️ LLM代码Bug: {msg}")
+
+    # 4. 检测异常处理吃掉所有错误
+    if re.search(r'except\s*:\s*\n\s*pass\s*$', code, re.MULTILINE):
+        warnings.append("⚠️ LLM代码Bug: 裸 except: pass 会静默吞掉所有异常，建议至少 print 错误信息")
+
+    # 5. 检测变量名拼写错误（常见 LLM 幻觉）
+    # 如 plot_timeline 中使用了 segments_exist 但实际定义的是 segments
+    var_usage = set(re.findall(r'\b([a-zA-Z_]\w*)\b', code))
+    var_defs = set()
+    for m in re.finditer(r'(?:^|\n)\s*([a-zA-Z_]\w*)\s*=', code, re.MULTILINE):
+        var_defs.add(m.group(1))
+    for m in re.finditer(r'for\s+([a-zA-Z_]\w*)\s+in', code):
+        var_defs.add(m.group(1))
+    for m in re.finditer(r'def\s+([a-zA-Z_]\w*)\s*\(', code):
+        var_defs.add(m.group(1))
+    # 过滤 Python 内置关键字和常见库名
+    PY_KEYWORDS = {
+        'if', 'else', 'elif', 'for', 'while', 'def', 'class', 'import', 'from',
+        'return', 'break', 'continue', 'pass', 'True', 'False', 'None', 'and',
+        'or', 'not', 'in', 'is', 'with', 'as', 'try', 'except', 'finally',
+        'raise', 'lambda', 'yield', 'global', 'nonlocal', 'assert', 'del',
+        'print', 'range', 'len', 'int', 'float', 'str', 'list', 'dict', 'set',
+        'tuple', 'bool', 'type', 'enumerate', 'zip', 'map', 'filter', 'sorted',
+        'reversed', 'any', 'all', 'min', 'max', 'sum', 'abs', 'round', 'open',
+        'np', 'os', 'sys', 'plt', 'math', 'time', 'json', 'csv', 're', 'Path',
+        'shutil', 'subprocess', 'tempfile', 'itertools', 'warnings', 'copy',
+        'deepcopy', 'defaultdict', 'Counter', 'namedtuple', 'dataclass',
+        'matplotlib', 'scipy', 'pandas', 'sklearn', 'numpy', '__name__',
+        '__file__', '__doc__', '__init__', 'self', 'cls', 'super', 'object',
+        'Exception', 'ValueError', 'TypeError', 'KeyError', 'IndexError',
+        'NotImplementedError', 'RuntimeError', 'StopIteration', 'IOError',
+        'OSError', 'AttributeError', 'ImportError', 'ZeroDivisionError',
+        'FileNotFoundError', 'PermissionError', 'IsADirectoryError',
+        'fig', 'ax', 'axes', 'i', 'j', 'k', 'm', 'n', 'x', 'y', 'z', 't',
+        'dt', 'dx', 'dy', 'dz', 'f', 'g', 'h', 'p', 'q', 'r', 's', 'u', 'v',
+        'w', 'a', 'b', 'c', 'd', 'e', 'idx', 'val', 'key', 'item', 'row',
+        'col', 'line', 'lines', 'text', 'data', 'result', 'results', 'output',
+        'path', 'file', 'name', 'value', 'values', 'params', 'args', 'kwargs',
+        'msg', 'err', 'error', 'msg', 'fn', 'func', 'ret', 'tmp', 'temp',
+        'best', 'best_val', 'best_x', 'cand', 'hist', 'hist_g', 'hist_h',
+        'bounds', 'lb', 'ub', 'lo', 'hi', 'pos', 'dist', 'val_g', 'val_r',
+        'val_h', 'x_g', 'x_r', 'x_h', 'tr', 'tg', 'th', 'dp', 'bp', 'cp',
+        'mp', 'ab', 'ap', 'ba', 'pb', 'pc', 'pa', 'ci', 'ci_lo', 'ci_hi',
+        'mc', 'mc_vals', 'mc_mean', 'mc_std', 'sens', 'sens_rows',
+        'pen', 'penalty', 'total', 'raw', 'raw_best', 'raw_total',
+        'covered', 'cover', 'coverage', 'segments', 'segment',
+        'drop_pos', 'burst_pos', 'cloud_pos', 'uav_pos', 'missile_pos',
+        'bomb_pos', 'point_seg_dist', 'evaluate', 'random_search',
+        'grid_search', 'hill_climb', 'main', 'plot_initial', 'plot_distance',
+        'plot_process', 'plot_strategy', 'plot_timeline', 'plot_sensitivity',
+        'plot_mc', 'save_csv', 'export_fig', 'fitness', 'objective',
+        'compute', 'solve', 'optimize', 'simulate', 'verify', 'validate',
+        'train', 'test', 'predict', 'classify', 'cluster', 'fit', 'transform',
+        'figsize', 'dpi', 'fontsize', 'alpha', 'color', 'label', 'title',
+        'xlabel', 'ylabel', 'zlabel', 'legend', 'grid', 'tight_layout',
+        'show', 'savefig', 'close', 'subplot', 'subplots', 'figure',
+        'Axes3D', 'add_subplot', 'scatter', 'plot', 'bar', 'barh', 'hist',
+        'axhline', 'axvline', 'text', 'fill_between', 'contour', 'imshow',
+    }
+    suspicious_vars = var_usage - var_defs - PY_KEYWORDS
+    # 过滤明显是内置函数/属性的
+    suspicious_vars = {v for v in suspicious_vars if not v.startswith('__') and len(v) > 2}
+    if suspicious_vars:
+        # 只报告那些看起来像拼写错误的（与已定义变量名相似）
+        suspicious_list = []
+        for var in suspicious_vars:
+            for defined in var_defs:
+                if _levenshtein_distance(var.lower(), defined.lower()) <= 2:
+                    suspicious_list.append(f"'{var}'（可能应为 '{defined}'）")
+                    break
+        if suspicious_list:
+            warnings.append(f"⚠️ LLM代码Bug: 可能引用了未定义变量: {', '.join(suspicious_list[:5])}")
+
+    return warnings
+
+
+def _levenshtein_distance(s1: str, s2: str) -> int:
+    """计算两个字符串的编辑距离"""
+    if len(s1) < len(s2):
+        return _levenshtein_distance(s2, s1)
+    if len(s2) == 0:
+        return len(s1)
+    prev_row = list(range(len(s2) + 1))
+    for i, c1 in enumerate(s1):
+        curr_row = [i + 1]
+        for j, c2 in enumerate(s2):
+            insertions = prev_row[j + 1] + 1
+            deletions = curr_row[j] + 1
+            substitutions = prev_row[j] + (c1 != c2)
+            curr_row.append(min(insertions, deletions, substitutions))
+        prev_row = curr_row
+    return prev_row[-1]
 
 
 def _check_negative_results(output: str, nonzero_count: int) -> List[str]:
@@ -630,6 +916,22 @@ def _check_algorithm_contrast(output: str) -> List[str]:
                     f"P1-算法失效: {len(positive)} 个算法找到有效解，"
                     f"{len(zero_or_negative)} 个算法返回非正结果（{zero_or_negative}），"
                     f"可能因约束过强或算法参数不当导致无法找到有效解")
+            # 检测所有算法返回完全相同值（非零也触发——说明目标函数是常数，几何模型有误）
+            if len(results_float) >= 3:
+                unique_vals = set(round(r, 6) for r in results_float)
+                if len(unique_vals) == 1:
+                    val = results_float[0]
+                    if val <= 0.0:
+                        warnings.append(
+                            f"P0-算法全零: 所有算法结果均为 0，目标函数可能始终返回 0，"
+                            f"请检查几何模型（实体位置/距离判定/时间窗口）是否正确"
+                        )
+                    else:
+                        warnings.append(
+                            f"P1-算法全同: 所有 {len(results_float)} 种算法返回完全相同值 {val:.4f}，"
+                            f"目标函数可能为常数（核心模型对所有输入返回相同值），"
+                            f"请检查核心判定条件是否过于宽松或位置计算是否使用了固定值"
+                        )
         except (ValueError, TypeError):
             pass
     return warnings
@@ -648,7 +950,7 @@ def _check_monte_carlo(output: str, code: str) -> List[str]:
             warnings.append("P1-蒙特卡洛: 代码中存在蒙特卡洛逻辑但未在控制台输出，请在代码中 print 验证结果")
         else:
             warnings.append("P1-蒙特卡洛: 未检测到蒙特卡洛验证，国赛要求对关键参数进行随机扰动验证")
-    if re.search(r'(?:std|标准差|std_dev)\s*[=:：]\s*0+\.?0*(?:\s|$)', output, re.IGNORECASE):
+    if re.search(r'(?:std|标准差|std_dev)\s*[=:：]\s*0+\.?0*', output, re.IGNORECASE):
         warnings.append("P1-蒙特卡洛异常: std=0，所有扰动结果完全相同，可能扰动幅度过小或目标函数平坦")
     return warnings
 
@@ -725,24 +1027,8 @@ def _check_resource_utilization(output: str) -> List[str]:
 
 
 def _check_search_precision(output: str) -> List[str]:
-    """检测搜索精度和理论最大值对比"""
+    """检测搜索精度和收敛状态"""
     warnings = []
-    theoretical_max_patterns = [
-        (r'理论[最大上限].*?(\d+\.?\d*)', r'(?:总|total|sum)\s*[=:：]\s*(\d+\.?\d*)'),
-        (r'理论[最大上限].*?(\d+\.?\d*)', r'(?:总|实际|最优).*?[=:：\s](\d+\.?\d*)'),
-        (r'最优.*?上限.*?(\d+\.?\d*)', r'实际.*?[=:：\s](\d+\.?\d*)'),
-        (r'(?:upper.bound|理论|最大).*?(\d+\.?\d*)', r'(?:result|结果|实际|最优).*?[=:：\s](\d+\.?\d*)'),
-    ]
-    for theory_pat, actual_pat in theoretical_max_patterns:
-        theory_match = re.search(theory_pat, output, re.IGNORECASE | re.DOTALL)
-        actual_match = re.search(actual_pat, output, re.IGNORECASE | re.DOTALL)
-        if theory_match and actual_match:
-            theory_max = float(theory_match.group(1))
-            actual = float(actual_match.group(1))
-            if theory_max > 0 and actual / theory_max < 0.1:
-                warnings.append(
-                    f"P0-结果质量过低: 实际结果({actual})仅为理论最大值({theory_max})的 "
-                    f"{actual/theory_max*100:.1f}%，搜索精度可能严重不足")
     unconverged_count = len(re.findall(r'未收敛|not converged', output, re.IGNORECASE))
     all_zero = bool(re.search(r'全部为\s*0', output))
     no_solution = bool(re.search(r'未找到有效解', output, re.IGNORECASE))
@@ -757,16 +1043,24 @@ def _check_search_precision(output: str) -> List[str]:
         points = int(search_points_match.group(1))
         if points < 200:
             warnings.append(f"P1-搜索精度: 仅使用 {points} 个搜索点，建议增加搜索点数以提高精度")
+    # 检测网格步长是否过大
+    grid_step_match = re.search(r'(?:步长|step|grid).*?(\d+\.?\d*)', output, re.IGNORECASE)
+    if grid_step_match:
+        step_val = float(grid_step_match.group(1))
+        if step_val > 10:
+            warnings.append(f"P1-搜索精度: 网格步长 ({step_val}) 过大，建议减小步长进行精细搜索")
     return warnings
 
 
 def _check_code_fabrication(code: str) -> List[str]:
-    """检测代码中的伪造数据（假敏感性分析、假收敛曲线）"""
+    """检测代码中的伪造数据（假敏感性分析、假收敛曲线、假蒙特卡洛数据）"""
     warnings = []
     fake_sens_patterns = [
-        r'-\s*10\.0\s*\)\s*/\s*10\.0\s*\*',
-        r'-\s*\d+\.0\s*\)\s*/\s*\d+\.0\s*\*',
+        r'-\s*10\.0\s*\)\s*/\s*10\.0',
+        r'-\s*\d+\.0\s*\)\s*/\s*\d+\.0',
         r'change_pct.*?-\s*\d+\.\d+\s*\)\s*/\s*\d+\.\d+',
+        r'\(\s*\w+\s*-\s*\d+(?:\.\d+)?\s*\)\s*/\s*\d+(?:\.\d+)?\s*\*\s*100',
+        r'base\s*=\s*\d+(?:\.\d+)?\s*#.*基线',
     ]
     for pat in fake_sens_patterns:
         if re.search(pat, code):
@@ -777,12 +1071,36 @@ def _check_code_fabrication(code: str) -> List[str]:
     fake_conv_patterns = [
         r'history\s*=\s*\[.*?\*\s*\(.*?/.*?\)\s+for',
         r'history.*?=.*?\[.*?linspace',
+        r'history\s*=\s*\[.*?for\s+i\s+in\s+range',
     ]
     for pat in fake_conv_patterns:
         if re.search(pat, code):
             warnings.append(
                 "P0-假收敛曲线: 代码中收敛曲线是合成的直线"
                 "（如 history = [best * (i/N) for i in ...]），应在优化过程中记录每次迭代的真实值")
+            break
+    # 新增：检测假蒙特卡洛数据
+    fake_mc_patterns = [
+        r'mc_vals\s*=\s*np\.(?:ones|zeros|full)\(',
+        r'mc_vals\s*=\s*\[.*?\]\s*\*\s*\d+',
+        r'monte.*?carlo.*?np\.random.*?seed.*?\n.*?return\s+np\.(?:ones|zeros)',
+    ]
+    for pat in fake_mc_patterns:
+        if re.search(pat, code, re.IGNORECASE | re.DOTALL):
+            warnings.append(
+                "P0-假蒙特卡洛: 蒙特卡洛验证数据可能为合成数据"
+                "（如全零/全一数组），应使用随机扰动生成真实分布")
+            break
+    # 新增：检测假算法对比（所有算法返回相同值）
+    fake_compare_patterns = [
+        r'algos?\s*=\s*\{.*?\}.*?for.*?in\s+algos?.*?:\s*\n\s*results?\[.*?\]\s*=\s*same_val',
+        r'for\s+\w+\s+in\s+\[.*?\]:\s*\n\s*print.*?same.*?result',
+    ]
+    for pat in fake_compare_patterns:
+        if re.search(pat, code, re.IGNORECASE | re.DOTALL):
+            warnings.append(
+                "P1-假算法对比: 算法对比结果可能为统一固定值，"
+                "各算法应独立运行并产出真实对比结果")
             break
     return warnings
 
@@ -820,6 +1138,41 @@ def _check_result_quality_ratio(output: str) -> List[str]:
                 break
             except (ValueError, TypeError):
                 pass
+    # 启发式回退：如果未找到理论最大值，但结果值极小且有多目标，发出警告
+    if not warnings:
+        # 检测结果值是否异常小（< 10）且有多目标
+        result_match = re.search(r'(?:总|最优|最佳|最终).*?(?:结果|遮蔽|值|时间)[=:：,]\s*(\d+\.?\d*)', output, re.IGNORECASE)
+        if not result_match:
+            result_match = re.search(r'(?:best|optimal|total|result).*?[=:：,]\s*(\d+\.?\d*)', output, re.IGNORECASE)
+        if not result_match:
+            # 表格格式：算法对比表中的最佳结果值
+            # 在 "算法对比" 或 "结果" 之后的表格区域中提取所有数值，取最大值
+            table_section = re.search(r'(?:算法对比|结果对比|性能对比).*?(?:\n\n|\Z)', output, re.DOTALL | re.IGNORECASE)
+            if table_section:
+                all_nums = re.findall(r'\s+(\d+\.?\d*)\s+', table_section.group(0))
+                if all_nums:
+                    try:
+                        result_val = max(float(n) for n in all_nums if float(n) > 0)
+                    except (ValueError, TypeError):
+                        result_val = None
+                else:
+                    result_val = None
+            else:
+                result_val = None
+        else:
+            try:
+                result_val = float(result_match.group(1))
+            except (ValueError, TypeError):
+                result_val = None
+        if result_val is not None:
+            try:
+                target_count = len(re.findall(r'(?:M\d|目标\d|导弹\d|节点\d|设备\d)', output, re.IGNORECASE))
+                if result_val < 10 and target_count >= 2:
+                    warnings.append(
+                        f"P1-结果偏低: 最优结果仅{result_val}，而问题涉及{target_count}个目标/资源，"
+                        "结果可能远低于理论最大值。请检查：1) 核心计算模型是否正确 2) 搜索策略是否充分收敛")
+            except (ValueError, TypeError):
+                pass
     return warnings
 
 
@@ -839,9 +1192,10 @@ def _check_multi_target_coverage(output: str) -> List[str]:
             zero_targets = []
             non_zero_targets = []
             for t in all_targets:
-                if re.search(rf'{re.escape(t)}.*?[=:：]\s*0(?:\.0+)?(?:\s|$)', output, re.IGNORECASE):
+                # 支持 = : ： , 等多种分隔符（CSV/表格/控制台输出）
+                if re.search(rf'{re.escape(t)}.*?[=:：,]\s*0(?:\.0+)?', output, re.IGNORECASE):
                     zero_targets.append(t)
-                elif re.search(rf'{re.escape(t)}.*?[=:：]\s*[1-9]\d*(?:\.\d+)?', output, re.IGNORECASE):
+                elif re.search(rf'{re.escape(t)}.*?[=:：,]\s*[1-9]\d*(?:\.\d+)?', output, re.IGNORECASE):
                     non_zero_targets.append(t)
             if zero_targets and non_zero_targets:
                 warnings.append(
@@ -859,8 +1213,8 @@ def _check_monte_carlo_robustness(output: str) -> List[str]:
     mc_patterns = [
         (r'蒙特卡洛验证.*?均值[=:：]\s*(\d+\.?\d*)', r'蒙特卡洛验证.*?最优[值解].*?[=:：]\s*(\d+\.?\d*)'),
         (r'Monte Carlo.*?mean[=:：]\s*(\d+\.?\d*)', r'Monte Carlo.*?(?:optimal|best).*?[=:：]\s*(\d+\.?\d*)'),
-        (r'蒙特卡洛验证.*?N\s*=\s*(\d+).*?均值[=:：]\s*(\d+\.?\d*)', r'蒙特卡洛验证.*?标准差[=:：]\s*(\d+\.?\d*)'),
-        (r'MC.*?mean[=:：]\s*(\d+\.?\d*).*?std[=:：]\s*(\d+\.?\d*)', r'MC.*?optimal[=:：]\s*(\d+\.?\d*)'),
+        (r'蒙特卡洛验证.*?N\s*=\s*\d+.*?均值[=:：]\s*(\d+\.?\d*)', r'蒙特卡洛验证.*?标准差[=:：]\s*(\d+\.?\d*)'),
+        (r'MC.*?mean[=:：]\s*(\d+\.?\d*).*?std[=:：]\s*\d+\.?\d*', r'MC.*?optimal[=:：]\s*(\d+\.?\d*)'),
     ]
     for pat1, pat2 in mc_patterns:
         m1 = re.search(pat1, output, re.IGNORECASE)
@@ -944,6 +1298,51 @@ def _p1_auto_pass_check(exec_output: str, code: str) -> bool:
     return True
 
 
+def _check_prediction_quality(output: str) -> List[str]:
+    """检测预测类结果的质量（适用于 B 类问题：预测/预报）"""
+    warnings = []
+    # 检查是否报告了预测误差指标
+    error_metrics = re.findall(r'(?:MAE|RMSE|MAPE|MSE|R[²2])\s*[=:：]\s*([\d.]+(?:e[+-]?\d+)?)', output, re.IGNORECASE)
+    if not error_metrics:
+        warnings.append("P1-预测指标缺失: 未输出预测误差指标（MAE/RMSE/MAPE/R² 至少一项）")
+    else:
+        # 检查是否有过大的误差
+        for val_str in error_metrics:
+            try:
+                val = float(val_str)
+                if val > 1e6:
+                    warnings.append(f"P0-预测误差过大: 误差指标 {val:.2e} 异常大，模型可能未正确拟合")
+            except ValueError:
+                pass
+    # 检查是否有预测区间
+    has_interval = bool(re.search(r'(?:预测区间|置信区间|prediction.interval|confidence.interval|CI|PI)', output, re.IGNORECASE))
+    if not has_interval:
+        warnings.append("P1-预测区间缺失: 未给出预测的不确定性区间")
+    # 检查是否划分了训练/测试集
+    has_split = bool(re.search(r'(?:训练集|测试集|train|test|训练|测试).*?(?:\d+%|比例)', output, re.IGNORECASE))
+    if not has_split:
+        warnings.append("P1-数据划分缺失: 未说明训练集/测试集划分")
+    return warnings
+
+
+def _check_classification_quality(output: str) -> List[str]:
+    """检测分类类结果的质量（适用于 D 类问题：分类/识别）"""
+    warnings = []
+    # 检查是否有混淆矩阵
+    has_matrix = bool(re.search(r'(?:混淆矩阵|confusion.matrix|TP|FP|TN|FN)', output, re.IGNORECASE))
+    if not has_matrix:
+        warnings.append("P1-混淆矩阵缺失: 未输出混淆矩阵")
+    # 检查是否有 F1/精确率/召回率
+    has_f1 = bool(re.search(r'(?:F1|精确率|召回率|precision|recall|accuracy)', output, re.IGNORECASE))
+    if not has_f1:
+        warnings.append("P1-分类指标缺失: 未输出精确率/召回率/F1 等分类指标")
+    # 检查是否有交叉验证
+    has_cv = bool(re.search(r'(?:交叉验证|cross.validation|K-fold|k-fold)', output, re.IGNORECASE))
+    if not has_cv:
+        warnings.append("P1-交叉验证缺失: 未进行交叉验证")
+    return warnings
+
+
 def _p1_code_is_runnable(exec_output: str, code: str) -> bool:
     """P1 降级判定：代码是否至少可执行且产出合理结果（即使 LLM 判 FAIL 也放行）"""
     # 硬性阻断：代码根本没跑起来
@@ -983,6 +1382,33 @@ def _p1_code_is_runnable(exec_output: str, code: str) -> bool:
     return True
 
 
+def _detect_problem_type(modeling_report: str) -> str:
+    """从建模报告中检测问题类型（A=优化/B=预测/C=评价/D=分类/E=仿真/F=机理/G=统计/unknown=未识别）"""
+    if not modeling_report:
+        return "unknown"
+    report_lower = modeling_report.lower()
+    type_patterns = [
+        (r'问题类型[：:]\s*A[.)、\s]*优化', 'A'),
+        (r'问题类型[：:]\s*B[.)、\s]*预测', 'B'),
+        (r'问题类型[：:]\s*C[.)、\s]*评价', 'C'),
+        (r'问题类型[：:]\s*D[.)、\s]*分类', 'D'),
+        (r'问题类型[：:]\s*E[.)、\s]*仿真', 'E'),
+        (r'问题类型[：:]\s*F[.)、\s]*机理', 'F'),
+        (r'问题类型[：:]\s*G[.)、\s]*统计', 'G'),
+        (r'优化类问题|优化类[：:]|类型[：:]\s*优化', 'A'),
+        (r'预测类问题|预测类[：:]|类型[：:]\s*预测', 'B'),
+        (r'评价类问题|评价类[：:]|类型[：:]\s*评价', 'C'),
+        (r'分类类问题|分类类[：:]|类型[：:]\s*分类', 'D'),
+        (r'仿真类问题|仿真类[：:]|类型[：:]\s*仿真', 'E'),
+        (r'机理类问题|机理类[：:]|类型[：:]\s*机理', 'F'),
+        (r'统计类问题|统计类[：:]|类型[：:]\s*统计', 'G'),
+    ]
+    for pattern, ptype in type_patterns:
+        if re.search(pattern, modeling_report):
+            return ptype
+    return "unknown"
+
+
 def _check_result_plausibility(output: str, code: str, problem: str) -> List[str]:
     """检测代码执行结果是否合理，返回 P0/P1 级警告（调度各子检查函数）"""
     warnings = []
@@ -996,12 +1422,39 @@ def _check_result_plausibility(output: str, code: str, problem: str) -> List[str
     warnings.extend(_check_multi_algorithm(output))
     warnings.extend(_check_sensitivity(output, code))
     warnings.extend(_check_nan_inf(output))
-    warnings.extend(_check_resource_utilization(output))
     warnings.extend(_check_search_precision(output))
     warnings.extend(_check_code_fabrication(code))
-    warnings.extend(_check_result_quality_ratio(output))
-    warnings.extend(_check_multi_target_coverage(output))
-    warnings.extend(_check_monte_carlo_robustness(output))
+
+    # 优化类专属检查：仅在输出包含优化相关关键词时触发
+    is_optimization = bool(re.search(
+        r'优化|最优解|optimization|optimal|约束|constraint|可行域|feasible|'
+        r'目标函数|objective|适应度|fitness|种群|population|粒子群|PSO|'
+        r'差分进化|differential|遗传算法|GA|模拟退火|贪心|greedy|爬山|hill',
+        output + code, re.IGNORECASE
+    ))
+    if is_optimization:
+        warnings.extend(_check_result_quality_ratio(output))
+        warnings.extend(_check_multi_target_coverage(output))
+        warnings.extend(_check_monte_carlo_robustness(output))
+        warnings.extend(_check_resource_utilization(output))
+
+    # 预测类专属检查：仅在输出包含预测相关关键词时触发
+    is_prediction = bool(re.search(
+        r'预测|forecast|predict|arima|lstm|prophet|回归|regression|'
+        r'MAE|RMSE|MAPE|R[²2]|时间序列|time.series',
+        output + code, re.IGNORECASE
+    ))
+    if is_prediction and not is_optimization:
+        warnings.extend(_check_prediction_quality(output))
+
+    # 分类类专属检查：仅在输出包含分类相关关键词时触发
+    is_classification = bool(re.search(
+        r'分类|classify|classifier|混淆矩阵|confusion|F1|precision|recall|'
+        r'SVM|随机森林|random.forest|逻辑回归|logistic|XGBoost|准确率',
+        output + code, re.IGNORECASE
+    ))
+    if is_classification and not is_optimization:
+        warnings.extend(_check_classification_quality(output))
 
     return warnings
 
@@ -1187,6 +1640,7 @@ def create_workflow(config: AppConfig):
             "result_files": state.get("result_files", []),
             "figure_files": state.get("figure_files", []),
             "code_exec_success": False,
+            "code_exec_blocked": False,
             "exec_error": None,
             "stage_output": "✅ 初始化完成，准备开始建模分析。",
         }
@@ -1477,7 +1931,50 @@ def create_workflow(config: AppConfig):
                     if hasattr(msg, "content") and "P2" in str(msg.content):
                         feedback = str(msg.content)
                         break
+            # 如果代码被预执行阻断，将详细阻断信息注入反馈
+            if state.get("code_exec_blocked", False):
+                code_exec_output = state.get("code_exec_output", "")
+                if code_exec_output:
+                    feedback = f"[预执行阻断详情]\n{code_exec_output}\n\n[质检反馈]\n{feedback}"
+            # 如果代码执行成功但结果异常（全零/低质量/NaN/未收敛），将执行输出诊断注入反馈
+            exec_output = state.get("code_exec_output", "")
+            if exec_output:
+                diag_info = []
+                for m in re.finditer(r'P0-(?:算法失败|结果质量|数值异常|蒙特卡洛失败|算法未收敛|鲁棒性|假敏感性|假收敛|假蒙特卡洛).*?(?=\n|$)', exec_output):
+                    diag_info.append(m.group(0))
+                for m in re.finditer(r'⚠️\s+P0-.*?(?=\n|$)', exec_output):
+                    diag_info.append(m.group(0))
+                # 提取 LLM 代码 Bug 警告
+                llm_bug_info = []
+                for m in re.finditer(r'⚠️\s+LLM代码Bug:.*?(?=\n|$)', exec_output):
+                    llm_bug_info.append(m.group(0))
+                if diag_info:
+                    diag_text = "\n".join(diag_info)
+                    guidance = "## ⚠️ 关键提示："
+                    if re.search(r'P0-算法失败|P0-数值异常', exec_output):
+                        guidance += (
+                            "结果全零或NaN通常意味着核心计算模型或约束判断有误。"
+                            "请先添加单点诊断测试确认核心计算函数能否返回非零值。"
+                            "如果单点诊断也返回零，说明目标函数在所有输入上都返回相同值（平坦优化景观），"
+                            "优化器无法找到梯度方向。此时应："
+                            "1) 检查判定阈值是否过严（如判定半径在全局尺度空间中占比极低），"
+                            "2) 改用软化约束（如 exp(-d²/σ²) 替代硬阈值），"
+                            "3) 放宽判定条件做初步搜索，确认能找到非零解后再收紧。"
+                        )
+                    if re.search(r'P0-结果质量', exec_output):
+                        guidance += "结果质量过低（<理论最大值10%）通常意味着搜索策略过于粗糙或候选解密度不足，请增大搜索精度或增加候选数量。"
+                    if re.search(r'P0-蒙特卡洛失败', exec_output):
+                        guidance += "蒙特卡洛失败率过高说明策略对参数扰动敏感，请分析失败原因并增强鲁棒性。"
+                    if re.search(r'P0-假敏感性|P0-假收敛|P0-假蒙特卡洛', exec_output):
+                        guidance += "检测到伪造数据模式（硬编码基线/合成收敛曲线/假蒙特卡洛），请使用真实计算结果和随机扰动生成数据。"
+                    feedback = f"[执行结果诊断]\n{diag_text}\n\n{guidance}\n\n[质检反馈]\n{feedback}"
+                if llm_bug_info:
+                    bug_text = "\n".join(llm_bug_info)
+                    feedback = f"[代码Bug检测]\n{bug_text}\n\n请修复以上代码Bug后重新生成。\n\n{feedback}"
             if feedback:
+                # 如果上一次没有被阻断但本次是修复，注入嵌套循环硬约束提醒
+                if not state.get("code_exec_blocked", False) and "嵌套" not in feedback:
+                    feedback = "⚠️ **硬性约束提醒**：修复时最深嵌套循环不得超过 3 层！如果引入新循环，必须用 `itertools.product()` 或优化器替代。\n\n" + feedback
                 result = coding.fix_code(feedback, messages, project_root)
             else:
                 result = coding.implement_full(modeling_report, terminology_table, messages, project_root, p1_feedback)
@@ -1588,15 +2085,45 @@ def create_workflow(config: AppConfig):
             # 预执行安全扫描：检测可能超时的代码模式
             pre_scan_warnings = []
             code_lines = code_file.split("\n")
+
+            # 函数级嵌套分析：区分优化型循环与分析型循环
+            # 分析型循环（蒙特卡洛/敏感性/绘图）允许 ≤5 层，优化型循环严格 ≤3 层
+            analysis_keywords = r'蒙特卡洛|monte.?carlo|敏感性|sensitivity|绘图|plot|figure|图表|chart|convergence|收敛|验证|verify|diagnos|诊断|统计|statistics|报告|report|输出|output|print|save|write'
+            func_nests = {}  # {(func_name, start_line): (max_opt_nest, max_all_nest, total_opt, total_all)}
+            in_function = False
+            func_name = ""
+            func_start = -1
+            func_lines = []
+            for i, line in enumerate(code_lines):
+                if re.match(r'def\s+(\w+)\s*\(', line):
+                    if in_function and func_lines:
+                        _analyze_function_nesting(func_lines, func_name, func_start, func_nests, analysis_keywords)
+                    in_function = True
+                    func_name = re.match(r'def\s+(\w+)\s*\(', line).group(1)
+                    func_start = i
+                    func_lines = [line]
+                elif in_function:
+                    func_lines.append(line)
+            if in_function and func_lines:
+                _analyze_function_nesting(func_lines, func_name, func_start, func_nests, analysis_keywords)
+
+            # 汇总：取所有函数中优化型嵌套的最大值
             max_nest = 0
             total_loops = 0
-            for line in code_lines:
-                stripped = line.strip()
-                if stripped.startswith("for ") or stripped.startswith("while "):
-                    total_loops += 1
-                    indent = len(line) - len(line.lstrip())
-                    depth = max(1, indent // 4 + 1)
-                    max_nest = max(max_nest, depth)
+            for (fname, _), (opt_nest, all_nest, opt_cnt, all_cnt) in func_nests.items():
+                max_nest = max(max_nest, opt_nest)
+                total_loops += all_cnt
+            # 如果没有任何函数被识别（如纯脚本），回退到简单计数
+            if not func_nests:
+                max_nest = 0
+                total_loops = 0
+                for line in code_lines:
+                    stripped = line.strip()
+                    if stripped.startswith("for ") or stripped.startswith("while "):
+                        total_loops += 1
+                        indent = len(line) - len(line.lstrip())
+                        depth = indent // 4
+                        max_nest = max(max_nest, depth)
             de_scan = re.search(r'differential_evolution\(.*?popsize\s*=\s*(\d+).*?maxiter\s*=\s*(\d+)', code_file, re.DOTALL)
             if de_scan:
                 de_pop = int(de_scan.group(1))
@@ -1609,11 +2136,13 @@ def create_workflow(config: AppConfig):
                 if pso_pop > 20:
                     pre_scan_warnings.append(f"⚠️ PSO 粒子数违规: {pso_pop} (要求≤20)")
             pso_scan_iter = None
-            for m in re.finditer(r'for\s+\w+\s+in\s+range\((\d+)\)', code_file):
-                n = int(m.group(1))
-                if n > 50:
-                    pso_scan_iter = n
-                    break
+            # 仅在代码包含 PSO/粒子群 关键词时检查迭代次数，避免将蒙特卡洛/敏感性分析循环误判为 PSO 迭代
+            if re.search(r'(?:pso|粒子群|particle.?swarm|n_particles|swarm_size)', code_file, re.IGNORECASE):
+                for m in re.finditer(r'for\s+\w+\s+in\s+range\((\d+)\)', code_file):
+                    n = int(m.group(1))
+                    if n > 50:
+                        pso_scan_iter = n
+                        break
             if pso_scan_iter:
                 pre_scan_warnings.append(f"⚠️ PSO 迭代次数违规: {pso_scan_iter} (要求≤50)")
             dt_scan = re.search(r'(?:DT|dt|TIME_STEP|time_step)\s*=\s*(\d+\.?\d*)', code_file)
@@ -1633,8 +2162,105 @@ def create_workflow(config: AppConfig):
                 pre_scan_warnings.append(f"⚠️ 适应度函数符号错误: '{fitness_sign_error.group(0)}' — -(raw - penalty) 在 penalty>raw 时会导致优化器寻找约束违反最严重的解！请改为 -(raw) + penalty")
             # 检测裁剪到 0（T = max(0.0, T) 等模式可能导致优化器扁平化）
             clip_to_zero = re.findall(r'(?:max|np\.maximum)\s*\(\s*0\.?0*\s*,\s*(\w+)\s*\)', code_file)
-            if clip_to_zero and re.search(r'def\s+(?:fitness|evaluate|objective|compute)', code_file):
+            has_clip_in_obj = bool(clip_to_zero) and bool(re.search(r'def\s+(?:fitness|evaluate|objective|compute)', code_file))
+            if has_clip_in_obj:
                 pre_scan_warnings.append(f"⚠️ 裁剪到零: 在目标函数中检测到 max(0, ...) 模式 — 不可行解被裁剪到 0，优化器无法区分违反程度，可能导致 DE/PSO 返回全零解！请改用比例惩罚")
+
+            # 独立嵌套深度阻断：≥5 层嵌套 → 必定超时或产出垃圾结果，直接阻断
+            if max_nest >= 5:
+                # 找出最深嵌套的函数名
+                deepest_func = ""
+                deepest_nest = 0
+                for (fname, _), (opt_nest, all_nest, opt_cnt, all_cnt) in func_nests.items():
+                    if opt_nest > deepest_nest:
+                        deepest_nest = opt_nest
+                        deepest_func = fname
+                if not deepest_func:
+                    deepest_func = "顶层代码"
+
+                fatal_output = (
+                    "### 🚫 预执行阻断：嵌套循环过深\n\n"
+                    f"检测到 **{max_nest} 层** 嵌套循环（共 {total_loops} 个循环），远超 ≤3 层的硬性要求。\n\n"
+                    f"最深层嵌套位于函数 **`{deepest_func}()`**（{deepest_nest} 层）。\n\n"
+                    f"**{max_nest} 层嵌套必然导致**：\n"
+                    f"- 计算时间指数级爆炸，300s 超时内无法完成\n"
+                    f"- 即使勉强执行完，结果也极可能是全零/NaN/负值\n\n"
+                    f"**修复方向（三选一）：**\n\n"
+                    f"**方案 A：`itertools.product()` 展平内层循环**\n"
+                    f"如果你有 N 层嵌套循环，将内层的 N-1 层合并为单个 product() 调用：\n"
+                    f"```python\n"
+                    f"from itertools import product\n"
+                    f"# 之前：外层 + 内层 4 层嵌套（会被阻断！）\n"
+                    f"# for i in range(N):\n"
+                    f"#     for th in theta_cand:\n"
+                    f"#         for v in v_cand:\n"
+                    f"#         for td in td_cand:\n"
+                    f"#             for delta in delta_cand:\n"
+                    f"#                 ...\n"
+                    f"# 之后：外层 + 单层 product()（总共 2 层，安全）\n"
+                    f"for i in range(N):\n"
+                    f"    for th, v, td, delta in product(theta_cand, v_cand, td_cand, delta_cand):\n"
+                    f"        # 原先 4 层内层循环的代码放在这里\n"
+                    f"        if 不满足条件: continue\n"
+                    f"        ...\n"
+                    f"```\n"
+                    f"**方案 B：使用优化器（DE/PSO）替代手动搜索**\n"
+                    f"```python\n"
+                    f"from scipy.optimize import differential_evolution\n"
+                    f"def objective(params):\n"
+                    f"    a, b, c, d, e = params  # 解包参数向量\n"
+                    f"    return -(compute_result(a, b, c, d, e))  # DE 最小化，取负号\n"
+                    f"bounds = [(0, 4), (0, 2), (0, 2), (0, 99), (0, 6.28)]\n"
+                    f"result = differential_evolution(objective, bounds, maxiter=20, popsize=8, seed=42)\n"
+                    f"```\n\n"
+                    f"**方案 C：完全移除 {deepest_func}()，直接使用优化器**\n"
+                    f"如果你的 `{deepest_func}()` 本质上是暴力枚举参数组合，直接删除它，"
+                    f"用 `differential_evolution` 或其并行版本 `differential_evolution(..., workers=-1)` 替代。\n\n"
+                    f"**请重新生成代码，消除深层嵌套后重试。**"
+                )
+                return {
+                    "current_stage": "code_exec",
+                    "stage_history": state.get("stage_history", []) + ["code_exec"],
+                    "code_exec_output": fatal_output,
+                    "figure_files": [],
+                    "result_files": [],
+                    "code_files": [],
+                    "code_exec_success": False,
+                    "code_exec_blocked": True,
+                }
+
+            # 致命组合检测：max(0,...) + 嵌套过深 → 几乎肯定返回全零，直接阻断
+            fatal_combo = has_clip_in_obj and max_nest > 3
+            if fatal_combo:
+                fatal_output = (
+                    "### 🚫 预执行阻断：检测到致命代码模式\n\n"
+                    f"代码同时存在以下致命问题：\n\n"
+                    f"1. **裁剪到零**：目标函数中使用了 `max(0, ...)` 模式，"
+                    f"导致优化器无法区分不可行解的违反程度。当所有候选解都不可行时，"
+                    f"优化器会返回全零结果（因为所有不可行解都被裁剪到同一个值 0）。\n\n"
+                    f"2. **嵌套循环过深**：最大 {max_nest} 层嵌套循环（要求 ≤3 层），"
+                    f"这会导致计算时间爆炸且代码几乎不可能产生正确结果。\n\n"
+                    f"**修复方向（必须全部满足才能重新执行）：**\n"
+                    f"- 将 `max(0, x)` 替换为带惩罚的原始值：`x + penalty * max(0, -x)` 或使用比例惩罚函数\n"
+                    f"- 将嵌套循环从 {max_nest} 层重构为 ≤3 层（使用向量化/预计算中间结果）\n"
+                    f"- 在优化前先验证几何约束：手动测试一组参数，确认 `evaluate()` 能返回非零值\n"
+                    f"- 如果 `evaluate()` 始终返回 0，说明几何模型本身有误，需要重新分析几何关系\n\n"
+                    f"**请修复以上问题后重新生成代码。**"
+                )
+                return {
+                    "current_stage": "code_exec",
+                    "stage_history": state.get("stage_history", []) + ["code_exec"],
+                    "code_exec_output": fatal_output,
+                    "figure_files": [],
+                    "result_files": [],
+                    "code_files": [],
+                    "code_exec_success": False,
+                    "code_exec_blocked": True,
+                }
+
+            # ====== LLM 常见代码 Bug 检测 ======
+            llm_bug_warnings = _detect_llm_code_bugs(code_file)
+            pre_scan_warnings.extend(llm_bug_warnings)
 
             if pre_scan_warnings:
                 output = "### ⚠️ 预执行扫描警告（代码可能超时，但将继续执行）\n"
@@ -1899,6 +2525,19 @@ def create_workflow(config: AppConfig):
                 "error": None,
             }
 
+        if state.get("code_exec_blocked", False):
+            return {
+                "current_stage": "verify",
+                "stage_history": state.get("stage_history", []) + ["verify"],
+                "code_exec_output": exec_output,
+                "raw_exec_output": raw_exec,
+                "verification_output": "[数值验证已跳过] 代码被预执行扫描阻断，未实际执行，无需验证",
+                "stage_output": state.get("stage_output", ""),
+                "code_exec_success": False,
+                "code_exec_blocked": True,
+                "error": "代码被预执行扫描阻断",
+            }
+
         code = state.get("stage_output", "")
         problem = state.get("problem_description", "")
         project_root = state.get("project_root", str(config.project_root))
@@ -2092,13 +2731,14 @@ def create_workflow(config: AppConfig):
                     vals = list(best_values.values())
                     diff = abs(vals[0] - vals[1])
                     nonzero_vals = [abs(v) for v in vals if v != 0]
+                    empty_cols = " |".join([""] * (len(algo_names) - 1))
                     if nonzero_vals:
                         if diff < 0.01 * max(nonzero_vals):
-                            comparison_text += "| **结论** | **结果一致，解可靠** |\n"
+                            comparison_text += f"| **结论** | **结果一致，解可靠** |{empty_cols} |\n"
                         else:
-                            comparison_text += "| **结论** | **结果差异较大，需进一步分析原因** |\n"
+                            comparison_text += f"| **结论** | **结果差异较大，需进一步分析原因** |{empty_cols} |\n"
                     else:
-                        comparison_text += "| **结论** | **所有算法结果均为0，可能存在算法实现问题** |\n"
+                        comparison_text += f"| **结论** | **所有算法结果均为0，可能存在算法实现问题** |{empty_cols} |\n"
             else:
                 comparison_text += "（未能从执行输出中自动提取定量对比数据，请查看下方原始输出）\n\n"
                 # 尝试从原始文本中提取更多数值信息
@@ -2254,10 +2894,23 @@ def create_workflow(config: AppConfig):
                 "4. **目标函数有缺陷**: 检查目标函数是否在有效区域内确实能返回非零值",
                 "5. **数值精度问题**: 检查浮点运算是否导致有效解被误判为零",
                 "",
+                "### ⚠️ 几何模型诊断（最关键！如果涉及空间位置判定）",
+                "",
+                "如果问题涉及空间位置/几何关系判定，全零结果最常见的根因是**核心计算模型错误**：",
+                "",
+                "1. **关键实体位置计算错误**: 检查关键实体的位置是否在目标路径/作用范围内",
+                "   - 打印一组参数的中间计算结果，手动验证实体坐标是否合理",
+                "   - 确认实体是否在有效作用区域内，而非远离目标",
+                "2. **判定阈值过严**: 检查有效半径/阈值是否合理（如阈值过小导致始终无法命中）",
+                "3. **时间窗口不重叠**: 实体激活到失效的时间窗口是否与目标经过时间有交集",
+                "4. **坐标系/方向向量错误**: 确认使用的是归一化方向向量，而非原始坐标差",
+                "5. **可视化诊断**: 强烈建议绘制场景图，标注目标轨迹、关键实体位置、作用范围",
+                "",
                 "### 诊断建议",
-                "1. 在目标函数中添加调试输出，打印中间计算值",
-                "2. 手动构造一个已知可行解，验证目标函数能正确计算",
+                "1. 在目标函数中添加调试输出，打印中间计算值（位置、距离、时间）",
+                "2. 手动构造一个已知可行解（如：将实体精确放置在目标路径上），验证目标函数能正确计算",
                 "3. 先用网格搜索小范围扫描，确认可行域存在",
+                "4. 如果涉及几何判定，绘制 3D 场景图进行目视验证",
             ])
             return {
                 "current_stage": "error_analysis",
@@ -2515,6 +3168,7 @@ def create_workflow(config: AppConfig):
         exec_output = state.get("code_exec_output", "")
         figure_files = state.get("figure_files", [])
         project_root = state.get("project_root", str(config.project_root))
+        modeling_report = state.get("modeling_report", "")
 
         figure_list = ""
         figure_audit_result = ""
@@ -2526,27 +3180,74 @@ def create_workflow(config: AppConfig):
         else:
             figure_list = "（未检测到图表文件，请确认代码是否生成了图表）"
 
+        problem_type = _detect_problem_type(modeling_report) if modeling_report else "unknown"
+
         result = quality.check_p2(code, exec_output, figure_list, messages, problem_files)
 
         status = _parse_quality_status(result)
         is_pass = status == "PASS"
         code_exec_success = state.get("code_exec_success", False)
+        code_exec_blocked = state.get("code_exec_blocked", False)
         if not code_exec_success and is_pass:
-            result += "\n\n[P2 自动覆盖] 代码执行失败（非零退出码/异常），P2 自动判定为 FAIL。请修复代码后重试。"
+            if code_exec_blocked:
+                result += "\n\n[P2 自动覆盖] 代码被预执行扫描阻断（嵌套过深/致命模式），P2 自动判定为 FAIL。请根据阻断信息修复代码后重试。"
+            else:
+                result += "\n\n[P2 自动覆盖] 代码执行失败（非零退出码/异常），P2 自动判定为 FAIL。请修复代码后重试。"
             is_pass = False
-        # 硬性检查：验证器发现结果异常（如全零值）时自动 FAIL
+        # 硬性检查：验证器发现结果异常（如全零值）时自动 FAIL（所有类型通用）
         if is_pass and re.search(r'\[结果异常检测\].*FAIL', exec_output):
-            result += "\n\n[P2 自动覆盖] 数值验证检测到结果异常（如全零值/NaN/负值），P2 自动判定为 FAIL。请修复算法后重试。"
+            # 从 exec_output 中提取嵌套深度警告
+            nesting_warning = ""
+            nest_match = re.search(r'嵌套循环过深:.*?最大\s*(\d+)\s*层', exec_output)
+            if nest_match:
+                nest_depth = nest_match.group(1)
+                nesting_warning = (
+                    f"\n\n## ⚠️ 嵌套循环过深（{nest_depth} 层）是导致结果异常的根本原因！\n"
+                    f"{nest_depth} 层嵌套导致计算时间指数级爆炸，优化器无法在超时内收敛。\n"
+                    f"**修复方向**：将所有搜索变量放入参数向量，使用 DE/PSO 优化器搜索，禁止手动嵌套循环！\n"
+                    f"目标函数 `evaluate(params)` 必须只做单次计算，不能内部枚举。"
+                )
+            result += f"\n\n[P2 自动覆盖] 数值验证检测到结果异常（如全零值/NaN/负值），P2 自动判定为 FAIL。请修复算法后重试。{nesting_warning}"
             is_pass = False
         if is_pass and re.search(r'P0-结果异常', exec_output):
-            result += "\n\n[P2 自动覆盖] 数值验证检测到 P0-结果异常，P2 自动判定为 FAIL。请修复算法后重试。"
+            nesting_warning = ""
+            nest_match = re.search(r'嵌套循环过深:.*?最大\s*(\d+)\s*层', exec_output)
+            if nest_match:
+                nest_depth = nest_match.group(1)
+                nesting_warning = (
+                    f"\n\n## ⚠️ 嵌套循环过深（{nest_depth} 层）是导致结果异常的根本原因！\n"
+                    f"{nest_depth} 层嵌套导致计算时间指数级爆炸，优化器无法在超时内收敛。\n"
+                    f"**修复方向**：将所有搜索变量放入参数向量，使用 DE/PSO 优化器搜索，禁止手动嵌套循环！"
+                )
+            result += f"\n\n[P2 自动覆盖] 数值验证检测到 P0-结果异常，P2 自动判定为 FAIL。请修复算法后重试。{nesting_warning}"
             is_pass = False
-        if is_pass and re.search(r'P0-结果质量', exec_output):
-            result += "\n\n[P2 自动覆盖] 结果质量不满足国赛要求（实际值<理论最大值的10%），P2 自动判定为 FAIL。"
+        # 数值异常（NaN/Inf）检测 — 通用，所有问题类型
+        if is_pass and re.search(r'P0-数值异常', exec_output):
+            result += "\n\n[P2 自动覆盖] 数值验证检测到 NaN/Inf 值（可能存在除零或数值溢出），P2 自动判定为 FAIL。请检查分母非零、数值稳定性、边界条件处理。"
             is_pass = False
-        if is_pass and re.search(r'P0-鲁棒性', exec_output):
-            result += "\n\n[P2 自动覆盖] 蒙特卡洛鲁棒性不满足国赛要求，P2 自动判定为 FAIL。"
-            is_pass = False
+        # 优化类专属检查（仅在问题类型为 A 时触发）
+        if problem_type == 'A':
+            if is_pass and re.search(r'P0-结果质量', exec_output):
+                result += "\n\n[P2 自动覆盖] 结果质量不满足国赛要求（实际值<理论最大值的10%），P2 自动判定为 FAIL。"
+                is_pass = False
+            if is_pass and re.search(r'P0-鲁棒性', exec_output):
+                result += "\n\n[P2 自动覆盖] 蒙特卡洛鲁棒性不满足国赛要求，P2 自动判定为 FAIL。"
+                is_pass = False
+            if is_pass and re.search(r'P0-蒙特卡洛失败率高', exec_output):
+                result += "\n\n[P2 自动覆盖] 蒙特卡洛模拟失败率过高（>30%结果为零），策略鲁棒性不满足国赛要求，P2 自动判定为 FAIL。"
+                is_pass = False
+        elif problem_type == 'B':
+            if is_pass and re.search(r'P0-预测误差', exec_output):
+                result += "\n\n[P2 自动覆盖] 预测误差过大，P2 自动判定为 FAIL。"
+                is_pass = False
+        elif problem_type == 'C':
+            if is_pass and re.search(r'P0-评价失效', exec_output):
+                result += "\n\n[P2 自动覆盖] 评价方法失效，P2 自动判定为 FAIL。"
+                is_pass = False
+        elif problem_type == 'D':
+            if is_pass and re.search(r'P0-分类异常', exec_output):
+                result += "\n\n[P2 自动覆盖] 分类器性能异常，P2 自动判定为 FAIL。"
+                is_pass = False
         quality_gates = dict(state.get("quality_gates", {}))
         if is_pass:
             quality_gates["P2"] = "PASS"
@@ -2878,6 +3579,9 @@ def create_workflow(config: AppConfig):
 
     def route_after_code_exec(state: WorkflowState) -> Literal["verify", "failed"]:
         if state.get("code_exec_success", False):
+            return "verify"
+        # 预扫描阻断（嵌套过深/致命组合）→ 走 verify → p2_check → 重试
+        if state.get("code_exec_blocked", False):
             return "verify"
         return "failed"
 

@@ -97,6 +97,7 @@ class NumericalVerifier:
             (r'pa\b', 'Pa'),
             (r'hz\b', 'Hz'),
             (r'deg\b', 'deg'),
+            (r'kg\b', 'kg'),
             (r'g\b', 'g'),
             (r'ms\b', 'ms'),
             (r'min\b', 'min'),
@@ -144,21 +145,21 @@ class NumericalVerifier:
         elif any(kw in name_lower for kw in ("volume", "体积", "容积", "vol")):
             result["unit"] = "m^3"
             result["expected_unit"] = "m^3"
-        # 距离/长度/坐标
+        # 距离/长度/坐标（单字母变量使用精确匹配，避免子串误报）
         elif any(kw in name_lower for kw in (
             "distance", "length", "width", "height", "depth", "altitude",
             "距离", "长度", "宽度", "高度", "深度", "海拔",
-            "x", "y", "z", "pos", "position", "radius", "r", "range",
+            "pos", "position", "radius", "range",
             "coordinate", "坐标", "offset", "偏移", "span", "跨度",
-        )):
+        )) or name_lower in ("x", "y", "z", "r"):
             result["unit"] = "m"
             result["expected_unit"] = "m"
-        # 时间
+        # 时间（单字母变量使用精确匹配，避免子串误报）
         elif any(kw in name_lower for kw in (
-            "time", "duration", "时间", "时长", "period", "t", "dt",
+            "time", "duration", "时间", "时长", "period",
             "timestamp", "时刻", "interval", "间隔", "delay", "延迟",
             "start", "end", "开始", "结束", "window", "窗口",
-        )):
+        )) or name_lower in ("t", "dt"):
             result["unit"] = "s"
             result["expected_unit"] = "s"
         # 质量
@@ -246,20 +247,22 @@ class NumericalVerifier:
         return constraints
 
     def _check_constraint(self, constraint: Dict, results: str) -> Dict:
-        value = constraint.get("value", "")
-        name = constraint.get("name", "")
-        unit = constraint.get("unit", "")
-        if value and name:
+        value = constraint.get("value", "").strip()
+        name = constraint.get("name", "").strip()
+        unit = constraint.get("unit", "").strip()
+        if not value or not name:
+            return {"status": "FAIL", "evidence": ""}
 
-            escaped_value = re.escape(value)
-            pattern = re.compile(
-                rf'{re.escape(name)}\s*[=＝:：]?\s*{escaped_value}\s*{re.escape(unit)}'
-                if unit else
-                rf'{re.escape(name)}.*?{escaped_value}'
-            )
-            for line in results.split("\n"):
-                if pattern.search(line):
-                    return {"status": "PASS", "evidence": line.strip()}
+        escaped_value = re.escape(value)
+        escaped_name = re.escape(name)
+        if unit:
+            escaped_unit = re.escape(unit)
+            pattern = re.compile(rf'{escaped_name}\s*[=＝:：]?\s*{escaped_value}\s*{escaped_unit}')
+        else:
+            pattern = re.compile(rf'{escaped_name}.*?{escaped_value}')
+        for line in results.split("\n"):
+            if pattern.search(line):
+                return {"status": "PASS", "evidence": line.strip()}
         return {"status": "FAIL", "evidence": ""}
 
     def cross_validation(self, code: str, results: str) -> Dict[str, Any]:
@@ -349,7 +352,74 @@ class NumericalVerifier:
         if not has_csv and has_sensitivity:
             findings.append("P2-缺失: 敏感性分析未输出CSV文件（请确保代码中输出 'sensitivity.csv' 字样）")
 
-        status = "PASS" if not any("P0" in f for f in findings) else "FAIL"
+        # 检测敏感性结果是否全为零/全相同（说明基础结果就是零，敏感性分析无意义）
+        csv_path = None
+        csv_match = re.search(r'(?:results[/\\]|\./)?(sensitivity[^,\s]*\.csv)', results, re.IGNORECASE)
+        if csv_match:
+            csv_path = csv_match.group(1)
+        if csv_path and not csv_path.startswith("results"):
+            csv_path = "results/" + csv_path
+        if csv_path:
+            from pathlib import Path
+            p = Path(csv_path)
+            # 尝试多个可能的路径位置
+            candidates = [
+                p,
+                Path(self.project_root) / "results" / p.name,
+                Path("results") / p.name,
+                Path("projects") / csv_path,
+                Path.cwd() / csv_path,
+            ]
+            for candidate in candidates:
+                if candidate.exists():
+                    p = candidate
+                    break
+            if p.exists():
+                try:
+                    import csv as csv_module
+                    with open(p, 'r', encoding='utf-8-sig', errors='replace') as f:
+                        reader = csv_module.DictReader(f)
+                        rows = list(reader)
+                    if rows:
+                        change_vals = []
+                        for row in rows:
+                            for col_name in ['change_pct', '变化率', 'change', 'pct_change']:
+                                # 支持列名如 "变化率(%)" 等变体
+                                matched_key = None
+                                for k in row.keys():
+                                    if col_name in k:
+                                        matched_key = k
+                                        break
+                                if matched_key:
+                                    try:
+                                        change_vals.append(float(row[matched_key]))
+                                    except (ValueError, TypeError):
+                                        pass
+                                    break
+                        if change_vals:
+                            if all(abs(v) < 1e-9 for v in change_vals):
+                                findings.append(
+                                    "P0-敏感性无效: 所有敏感性变化率均为 0，说明基础结果为零，"
+                                    "敏感性分析无意义。请先确保优化结果非零后再进行敏感性分析"
+                                )
+                            elif len(set(round(v, 6) for v in change_vals)) <= 1:
+                                findings.append(
+                                    "P1-敏感性均一: 所有参数的变化率完全相同，"
+                                    "可能敏感性分析代码有误（如始终使用同一参数值）"
+                                )
+                            # 检测部分参数变化率为零（说明这些参数未被正确变化）
+                            zero_change_count = sum(1 for v in change_vals if abs(v) < 1e-9)
+                            non_zero_count = len(change_vals) - zero_change_count
+                            if zero_change_count > 0 and non_zero_count > 0 and zero_change_count >= non_zero_count:
+                                findings.append(
+                                    f"P1-敏感性部分无效: {zero_change_count}/{len(change_vals)} 个变化率为零，"
+                                    "说明部分参数的变化未影响结果（参数未被正确变化或代码中未使用这些参数），"
+                                    "请检查敏感性分析代码是否真正改变了每个参数"
+                                )
+                except Exception:
+                    pass  # 读取失败不阻塞
+
+        status = "PASS" if not any("P0" in f or "P2-缺失" in f for f in findings) else "FAIL"
         return {
             "status": status,
             "findings": findings if findings else ["敏感性分析检查通过"],
@@ -417,7 +487,7 @@ class NumericalVerifier:
             else:
                 findings.append("P1-不完整: 检测到收敛性分析但未明确收敛状态")
 
-        status = "PASS" if not any("P1" in f for f in findings) else "FAIL"
+        status = "PASS" if not any("P1" in f or "P2-缺失" in f for f in findings) else "FAIL"
         return {
             "status": status,
             "findings": findings if findings else ["收敛性分析检查通过"],
@@ -449,7 +519,7 @@ class NumericalVerifier:
         else:
             findings.append("P2-缺失: 未检测到极端值/边界值测试，建议验证参数取边界值时结果是否合理")
 
-        status = "PASS" if not any("P1" in f for f in findings) else "FAIL"
+        status = "PASS" if not any("P1" in f or "P2-缺失" in f for f in findings) else "FAIL"
         return {
             "status": status,
             "findings": findings if findings else ["极端值测试检查通过"],

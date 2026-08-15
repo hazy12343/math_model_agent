@@ -277,4 +277,4 @@ class WritingAgent(BaseAgent):
 请修正论文并重新输出。
 
 ⚠️ **禁止大段重复段落！** 每段内容只写一次，不要复制粘贴相同的内容！"""
-        return self.invoke(messages, user_input=user_msg, system_prompt=prompt)
+        return self.invoke(messages, user_input=user_msg, system_prompt=prompt, use_fix_model=True)

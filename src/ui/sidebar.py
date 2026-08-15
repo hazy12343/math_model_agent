@@ -14,41 +14,25 @@ def render_sidebar(config: dict) -> dict:
 
         st.markdown("### 🔑 API 配置")
 
-        provider = st.selectbox(
-            "LLM 提供商",
-            ["deepseek", "openai"],
-            index=0 if config.get("llm_provider", "deepseek") == "deepseek" else 1,
-            help="选择大模型提供商"
-        )
-
-        if provider == "deepseek":
-            default_models = ["deepseek-chat", "deepseek-reasoner"]
-            default_base_url = "https://api.deepseek.com"
-            api_key_label = "DeepSeek API Key"
-        else:
-            default_models = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"]
-            default_base_url = ""
-            api_key_label = "OpenAI API Key"
-
         api_key = st.text_input(
-            api_key_label,
+            "DeepSeek API Key",
             type="password",
             value=config.get("llm_api_key", ""),
-            help=f"输入你的 {api_key_label}"
+            help="输入你的 DeepSeek API Key"
         )
 
         base_url = st.text_input(
             "API Base URL",
-            value=config.get("llm_base_url", default_base_url),
-            help="DeepSeek 默认: https://api.deepseek.com"
+            value=config.get("llm_base_url", "https://api.deepseek.com"),
+            help="默认: https://api.deepseek.com，可改为代理地址"
         )
 
-        model = st.selectbox(
-            "模型",
-            default_models,
-            index=0
-        )
-        temperature = st.slider("Temperature", 0.0, 1.0, 0.1, 0.05)
+        st.markdown("---")
+
+        st.markdown("### 🧠 模型策略")
+        st.caption("生成/质检：`deepseek-chat`（Temperature 0.1）")
+        st.caption("修复/修改：`deepseek-reasoner`（Temperature 0.0）")
+        st.caption("系统自动切换，无需手动配置")
 
         st.markdown("---")
 
@@ -73,9 +57,6 @@ def render_sidebar(config: dict) -> dict:
         st.markdown(f"**Skill 版本**: 1.1.1")
 
     return {
-        "llm_provider": provider,
         "llm_api_key": api_key,
         "llm_base_url": base_url if base_url else None,
-        "llm_model": model,
-        "temperature": temperature,
     }

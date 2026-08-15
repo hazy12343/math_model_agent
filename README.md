@@ -9,7 +9,7 @@
 [![LangGraph](https://img.shields.io/badge/LangGraph-0.2+-orange.svg)](https://github.com/langchain-ai/langgraph)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.35+-red.svg)](https://streamlit.io)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Last Updated](https://img.shields.io/badge/Last%20Updated-2026.08.14-brightgreen.svg)]()
+[![Last Updated](https://img.shields.io/badge/Last%20Updated-2026.08.15-brightgreen.svg)]()
 
 </div>
 
@@ -379,6 +379,17 @@ math-model-agent/
 ---
 
 ## 🆕 更新日志
+
+### 2026.08.15 — Bug 修复与代码优化（本轮审查）
+
+| 类别 | 变更内容 |
+|------|---------|
+| 🐛 **Bug 修复** | 修复 `model_comparison_node` 中结论行表格列数不匹配（只有2列，表头有N+2列），动态补齐空列 |
+| 🐛 **Bug 修复** | 修复 `verifier.py` 中 `_check_constraint` 对空字符串 `re.escape("")` 产生无意义正则，增加空值防护 |
+| 🐛 **Bug 修复** | 修复 `verifier.py` 中 `_infer_dimensions` 的单位匹配顺序问题：`r'g\b'` 会错误匹配 "10kg" 中的 "g"（识别为克而非千克），在 `r'g\b'` 前添加 `r'kg\b'` |
+| 🐛 **Bug 修复** | 修复 `verifier.py` 中 `_infer_dimensions_from_name` 单字母变量名（`"x"`, `"r"`, `"t"`）使用子串匹配导致大量误报（如 `"max_val"` 匹配 `"x"`、`"result"` 匹配 `"t"`），改为精确匹配 |
+| 🐛 **Bug 修复** | 修复 `_check_code_fabrication` 中假敏感性分析检测模式过于严格（要求 `\*` 结尾），移除末尾 `\*` 要求并替换 `x` 为 `\w+` |
+| 🧹 **代码优化** | 优化 `verifier.py` 中 `_check_constraint` 可读性，将三元表达式嵌套改为清晰 `if/else` 分支 |
 
 ### 2026.08.14 — 国赛级质量优化（冲击国一）
 

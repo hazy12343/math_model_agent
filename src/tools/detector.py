@@ -252,8 +252,15 @@ class TrapDetector:
         if not findings:
             findings.append("未检测到明显的结果异常")
 
+        if any("P0" in f for f in findings):
+            status = "FAIL"
+        elif any("P1" in f for f in findings):
+            status = "WARN"
+        else:
+            status = "PASS"
+
         return {
-            "status": "PASS" if not any("P0" in f for f in findings) else "FAIL",
+            "status": status,
             "findings": findings,
             "anomaly_count": len([f for f in findings if "P0" in f or "P1" in f]),
         }

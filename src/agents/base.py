@@ -18,6 +18,7 @@ class BaseAgent:
         self.role_name = role_name
         self.skill_loader = SkillLoader(config.skill_root)
         self._llm: Optional[ChatOpenAI] = None
+        self._fix_llm: Optional[ChatOpenAI] = None
         self._system_prompt: Optional[str] = None
 
     @property
@@ -33,6 +34,21 @@ class BaseAgent:
             )
         return self._llm
 
+    @property
+    def fix_llm(self) -> ChatOpenAI:
+        if self._fix_llm is None:
+            model = self.config.fix_model
+            temperature = self.config.fix_temperature
+            self._fix_llm = ChatOpenAI(
+                model=model,
+                api_key=self.config.llm_api_key,
+                base_url=self.config.llm_base_url,
+                temperature=temperature,
+                max_tokens=self.config.max_tokens,
+                streaming=True,
+            )
+        return self._fix_llm
+
     def load_system_prompt(self) -> str:
         raise NotImplementedError
 
@@ -44,6 +60,7 @@ class BaseAgent:
         messages: List[BaseMessage],
         user_input: Optional[str] = None,
         system_prompt: Optional[str] = None,
+        use_fix_model: bool = False,
         **kwargs
     ) -> str:
         if system_prompt is not None:
@@ -58,12 +75,14 @@ class BaseAgent:
             full_messages.append(HumanMessage(content=user_input))
 
         full_response = []
+        llm_instance = self.fix_llm if use_fix_model else self.llm
+        model_name = self.config.fix_model if use_fix_model else self.config.llm_model
         print(f"\n{'='*60}", file=sys.stderr, flush=True)
-        print(f"  [{self.role_name}] LLM 思考中...", file=sys.stderr, flush=True)
+        print(f"  [{self.role_name}] LLM 思考中... (模型: {model_name})", file=sys.stderr, flush=True)
         print(f"{'='*60}", file=sys.stderr, flush=True)
 
         chunk_count = 0
-        for chunk in self.llm.stream(full_messages):
+        for chunk in llm_instance.stream(full_messages):
             token = chunk.content
             if token:
                 print(token, end="", file=sys.stderr, flush=True)

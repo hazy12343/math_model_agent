@@ -20,6 +20,8 @@ class AppConfig:
     llm_base_url: Optional[str] = None
     temperature: float = 0.1
     max_tokens: int = 16384
+    fix_model: str = "deepseek-reasoner"
+    fix_temperature: float = 0.0
     max_retries: int = 3
     code_exec_timeout: int = 300
     enable_verification: bool = True
@@ -62,7 +64,9 @@ class AppConfig:
             llm_base_url=base_url,
             competition=os.getenv("COMPETITION", "cumcm"),
             language=os.getenv("LANGUAGE", "chinese"),
-            temperature=float(os.getenv("TEMPERATURE", "0.1") or "0.1"),
+            temperature=float(os.getenv("TEMPERATURE", "0.1")),
+            fix_model=os.getenv("FIX_MODEL", "deepseek-reasoner"),
+            fix_temperature=float(os.getenv("FIX_TEMPERATURE", "0.0")),
         )
 
     def ensure_project_root(self) -> Path:

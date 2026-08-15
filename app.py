@@ -70,19 +70,14 @@ if "stop_requested" not in st.session_state:
 
 
 sidebar_config = render_sidebar({
-    "llm_provider": st.session_state.config.llm_provider,
     "llm_api_key": st.session_state.config.llm_api_key,
     "llm_base_url": st.session_state.config.llm_base_url,
 })
 
-if sidebar_config.get("llm_provider"):
-    st.session_state.config.llm_provider = sidebar_config["llm_provider"]
 if sidebar_config.get("llm_api_key"):
     st.session_state.config.llm_api_key = sidebar_config["llm_api_key"]
 if sidebar_config.get("llm_base_url"):
     st.session_state.config.llm_base_url = sidebar_config["llm_base_url"]
-st.session_state.config.llm_model = sidebar_config.get("llm_model", "deepseek-chat")
-st.session_state.config.temperature = sidebar_config.get("temperature", 0.1)
 
 os.environ["OPENAI_API_KEY"] = st.session_state.config.llm_api_key or ""
 if st.session_state.config.llm_base_url:

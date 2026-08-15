@@ -23,7 +23,7 @@ class AppConfig:
     fix_model: str = "deepseek-reasoner"
     fix_temperature: float = 0.0
     max_retries: int = 3
-    code_exec_timeout: int = 300
+    code_exec_timeout: int = 600  # 10分钟，给复杂优化算法充足时间
     enable_verification: bool = True
     enable_multi_model_compare: bool = True
     enable_trap_detection: bool = True
@@ -32,9 +32,11 @@ class AppConfig:
     min_figure_count: int = 8
     min_algorithm_count: int = 3
     auto_syntax_repair: bool = True
-    result_quality_threshold: float = 0.10
-    monte_carlo_success_rate: float = 0.60
-    coverage_threshold: float = 0.80
+    result_quality_threshold: float = 0.15  # 国赛级别：优化结果 ≥ 理论最大值的 15%
+    monte_carlo_success_rate: float = 0.80  # 国赛级别：蒙特卡洛成功率 ≥ 80%
+    monte_carlo_robustness_ratio: float = 0.50  # 国赛级别：蒙特卡洛均值 ≥ 最优值的 50%
+    coverage_threshold: float = 0.80  # 国赛级别：资源覆盖率 ≥ 80%
+    resource_utilization_threshold: float = 0.80  # 国赛级别：资源利用率 ≥ 80%
     subagents: dict = field(default_factory=lambda: {
         "official_rules": False,
         "attachment_inventory": False,

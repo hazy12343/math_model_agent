@@ -9,7 +9,7 @@
 [![LangGraph](https://img.shields.io/badge/LangGraph-0.2+-orange.svg)](https://github.com/langchain-ai/langgraph)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.35+-red.svg)](https://streamlit.io)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Last Updated](https://img.shields.io/badge/Last%20Updated-2026.08.15-brightgreen.svg)]()
+[![Last Updated](https://img.shields.io/badge/Last%20Updated-2026.08.16-brightgreen.svg)]()
 
 </div>
 
@@ -281,7 +281,7 @@ math-model-agent/
 |------|------|---------|
 | **M1** | 建模终检 | 子问题覆盖、假设依据、公式自洽、单位约束、模型可实现性、验证方案 |
 | **P1** | 最小可运行 | 代码可执行性、退出码、输入输出追溯、单位数值范围、关键约束满足 |
-| **P2** | 编程终检 | 代码完整性、结果合理性、图表覆盖度、中文标签、数值验证结果、**算法完整性（≥3种算法、含全局+局部、收敛性检查、蒙特卡洛验证≥50%均值/最优值、敏感性分析≥3参数×5水平、多目标全覆盖、结果质量≥理论最大值10%）** |
+| **P2** | 编程终检 | 代码完整性、结果合理性、图表覆盖度、中文标签、数值验证结果、**算法完整性（≥3种算法、含全局优化(DE/PSO/GA/SA)、收敛性检查、蒙特卡洛验证≥50%均值/最优值、失败率≤20%、敏感性分析、多目标全覆盖、资源利用率≥80%、结果质量≥理论最大值15%）** |
 | **W1** | 证据大纲 | 主张-证据映射、摘要数值一致性、图表公式引用路径 |
 | **W2** | 论文终检 | 规则合规、主张-证据一致、数值单位正确、图表引用、文献可追溯 |
 
@@ -335,9 +335,11 @@ math-model-agent/
 | `min_algorithm_count` | 最少算法对比数量 | 3 (国赛模式) |
 | `auto_syntax_repair` | 自动语法修复管道 | `True` |
 | `enable_national_competition_mode` | 国赛模式（更严格的质量标准） | `True` |
-| `result_quality_threshold` | 结果质量阈值（vs 理论上界） | 0.10 (10%) |
-| `monte_carlo_success_rate` | 蒙特卡洛最低成功率 | 0.60 (60%) |
+| `result_quality_threshold` | 结果质量阈值（vs 理论上界） | 0.15 (15%) |
+| `monte_carlo_success_rate` | 蒙特卡洛最低成功率 | 0.80 (80%) |
+| `monte_carlo_robustness_ratio` | 蒙特卡洛均值 vs 最优值 | 0.50 (50%) |
 | `coverage_threshold` | 多目标最低覆盖率 | 0.80 (80%) |
+| `resource_utilization_threshold` | 资源利用率最低要求 | 0.80 (80%) |
 
 ---
 
@@ -379,6 +381,21 @@ math-model-agent/
 ---
 
 ## 🆕 更新日志
+
+### 2026.08.16 — 算法资产接入与国赛阈值升级（本轮优化）
+
+| 类别 | 变更内容 |
+|------|---------|
+| 🧠 **算法资产接入** | `coding.py` 系统提示词预加载 4 大优化算法（遗传算法、粒子群优化、模拟退火、优化算法总览），新增算法索引和 P0 级算法查阅规则，强制 LLM 在编写代码前必须查阅算法文档中的代码模板和参数建议 |
+| 📊 **国赛阈值升级** | `config.py` 结果质量阈值 10%→15%，蒙特卡洛成功率 60%→80%，新增 `monte_carlo_robustness_ratio`(50%) 和 `resource_utilization_threshold`(80%) 两个质量阈值 |
+| 🛡️ **蒙特卡洛鲁棒性增强** | `graph.py` 新增 P2 级 MC 鲁棒性警告（MC 均值/最优值 ≥ 70%），MC 失败率阈值 30%→20%，补充更多正则匹配模式，附带具体修复建议（鲁棒性惩罚项/平坦区域选择/安全余量收缩/min-max 优化） |
+| 📦 **资源利用率检测** | `graph.py` 新增资源利用率自动检测（P0-闲置资源→FAIL、P1-低利用率<50%、P2-部分利用不足），预执行扫描新增资源利用率统计检测 |
+| 🔬 **算法多样性扫描** | `graph.py` 预执行扫描新增算法多样性检测（是否包含 `differential_evolution`、是否 ≥3 种算法），缺失时给出 P2 警告并自动 FAIL |
+| 📐 **理论上界指南** | `modeling.py` 理论上界计算从简单模板升级为详细分步指南，包含完整示例，强调必须输出具体数值 |
+| 📝 **论文国赛要求** | `writing.py` 新增国赛级论文关键要求：算法对比表（DE/RS/Greedy）、MC 鲁棒性分析（含比值）、资源利用率分析、收敛性曲线（禁止合成数据） |
+| ✅ **质检标准升级** | `quality.py` 新增资源利用率检查（第 19 条）和差分进化使用检查（第 20 条），MC 均值<30%设为 P0 错误 |
+| 🔧 **基础设施** | `base.py` 新增 `_load_algorithm_index()` 方法，`skill_loader.py` 已有 `load_algorithm_index()` 和 `get_all_algorithms()` 工具方法 |
+| 🐛 **Bug 修复** | 修复 `coding.py` 中 f-string 未转义花括号导致的 `NameError: name 'name' is not defined` 运行时错误 |
 
 ### 2026.08.15 — Bug 修复与代码优化（本轮审查）
 

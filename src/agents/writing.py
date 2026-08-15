@@ -14,6 +14,42 @@ class WritingAgent(BaseAgent):
         self.file_reader = FileReaderTool(config.skill_root)
         self.paper_search = PaperSearchTool(config.skill_root)
 
+    def _get_focused_instruction(self, modeling_report: str, context: str = "论文") -> str:
+        if "用户聚焦指令" in modeling_report:
+            return (
+                f"\n\n# ⚠️ 最高优先级指令\n"
+                f"用户明确要求只撰写特定子问题的{context}。你必须严格遵守：只撰写该子问题的{context}，不要涉及其他子问题！\n\n"
+                f"# ⚠️ 防重复指令\n"
+                f"禁止在{context}中重复输出相同的段落！每段内容只写一次，不要大段重复！"
+                f"如果发现自己陷入重复，立即切换到下一个章节。"
+            )
+        return ""
+
+    def _search_references(self, modeling_report: str) -> str:
+        try:
+            topic_keywords = []
+            report_lower = modeling_report.lower()
+            KEYWORDS = [
+                "优化", "预测", "分类", "聚类", "评价", "调度", "路径", "规划",
+                "optimization", "prediction", "classification", "clustering",
+                "scheduling", "routing", "planning", "仿真", "simulation",
+                "无人机", "车辆", "信号", "图像", "网络", "资源",
+                "uav", "drone", "vehicle", "signal", "image", "network",
+            ]
+            for kw in KEYWORDS:
+                if kw in report_lower:
+                    topic_keywords.append(kw)
+            if not topic_keywords:
+                topic_keywords = ["数学建模", "优化"]
+            search_query = "数学建模 " + " ".join(topic_keywords[:5])
+            search_func = self.paper_search.search_tool
+            search_results = search_func.invoke({"query": search_query, "limit": 5})
+            if search_results:
+                return "\n\n## 搜索到的参考文献\n\n" + str(search_results)[:2000]
+        except Exception:
+            pass
+        return ""
+
     def load_system_prompt(self) -> str:
         parts = []
 
@@ -31,6 +67,18 @@ class WritingAgent(BaseAgent):
         writing_spec = self._load_reference("references/roles/论文手/references/写作规范.md")
         if writing_spec:
             parts.append(f"\n\n# 写作规范\n\n{writing_spec}")
+
+        latex_format = self._load_reference("references/roles/论文手/references/LaTeX格式规范.md")
+        if latex_format:
+            parts.append(f"\n\n# LaTeX 格式规范\n\n{latex_format}")
+
+        self_review = self._load_reference("references/roles/论文手/references/自审框架.md")
+        if self_review:
+            parts.append(f"\n\n# 自审框架（输出前必须逐项检查）\n\n{self_review}")
+
+        paper_format = self._load_reference("references/roles/论文手/references/论文格式规范.md")
+        if paper_format:
+            parts.append(f"\n\n# 论文格式规范\n\n{paper_format}")
 
         parts.append(f"""
 \n\n# 当前任务配置
@@ -98,6 +146,34 @@ class WritingAgent(BaseAgent):
 - 参考文献格式：[编号] 作者. 标题. 期刊/出版社, 年份.
 - 可以使用 `paper_search` 工具搜索相关学术文献
 - 题目给出的基本物理定律和数学公式属于已知常识，无需引用外部文献
+
+# 国赛级论文关键要求（P0 级！）
+## 算法对比表（优化类问题必须）
+- 论文中必须包含"算法对比表"，格式如下：
+  | 算法 | 目标值 | 收敛性 | 计算时间 | 备注 |
+  |------|--------|--------|----------|------|
+  | 差分进化(DE) | XX.XX | 已收敛 | XXs | 全局最优 |
+  | 随机搜索(RS) | XX.XX | -- | XXs | 基准算法 |
+  | 贪心算法(Greedy) | XX.XX | -- | XXs | 局部最优 |
+- 如果代码结果中缺少某种算法的数据，在表格中标注"数据缺失"而非编造
+
+## 蒙特卡洛鲁棒性分析（优化类问题必须）
+- 论文中必须包含以下内容：
+  1. 蒙特卡洛验证的均值、标准差、置信区间
+  2. MC均值与最优值的比值（如"MC均值/最优值 = 65.2%"）
+  3. 如果比值 < 50%，必须在论文中讨论原因并提出改进方向
+  4. 扰动参数的列表和扰动幅度（如"物理参数 ±5%，决策参数 ±3%"）
+
+## 资源利用率分析（资源分配类问题必须）
+- 如果问题涉及资源分配，论文中必须包含：
+  1. 资源利用率表格（每个资源节点的使用/总容量）
+  2. 如果有闲置资源，说明原因（如物理不可达）
+  3. 资源利用率 < 100% 且无合理解释 → 论文质量降级
+
+## 收敛性曲线（迭代优化必须）
+- 论文中必须包含至少一张收敛曲线图
+- 图中标注：横轴"迭代次数"、纵轴"目标函数值"、至少2条曲线（不同算法）
+- 收敛曲线必须来自真实迭代记录，禁止合成数据
 """)
         parts.append("""
 # LaTeX 公式格式规范（关键！）
@@ -167,12 +243,8 @@ class WritingAgent(BaseAgent):
         messages: List[BaseMessage],
         project_root: str,
     ) -> str:
-        prompt = self.load_system_prompt().replace("{project_root}", project_root)
-
-        # 检测用户聚焦指令
-        is_focused = "用户聚焦指令" in modeling_report
-        if is_focused:
-            prompt += "\n\n# ⚠️ 最高优先级指令\n用户明确要求只撰写特定子问题的论文。你必须严格遵守：只撰写该子问题的论文，不要涉及其他子问题！\n\n# ⚠️ 防重复指令\n禁止在输出中重复相同的段落！每段内容只写一次，不要大段重复！"
+        prompt = self.get_cached_prompt().replace("{project_root}", project_root)
+        prompt += self._get_focused_instruction(modeling_report, "证据大纲")
 
         user_msg = f"""请建立证据大纲（W1阶段）：
 
@@ -185,7 +257,7 @@ class WritingAgent(BaseAgent):
 ## 图表清单
 {figure_list[:3000]}
 
-请为{"该子问题" if is_focused else "每个子问题"}建立 Claim-Evidence 映射：
+请为{"该子问题" if "用户聚焦指令" in modeling_report else "每个子问题"}建立 Claim-Evidence 映射：
 1. 核心主张
 2. 支撑公式
 3. 结果表位置
@@ -204,37 +276,10 @@ class WritingAgent(BaseAgent):
         messages: List[BaseMessage],
         project_root: str,
     ) -> str:
-        prompt = self.load_system_prompt().replace("{project_root}", project_root)
+        prompt = self.get_cached_prompt().replace("{project_root}", project_root)
+        prompt += self._get_focused_instruction(modeling_report, "论文")
 
-        # 检测用户聚焦指令
-        if "用户聚焦指令" in modeling_report:
-            prompt += "\n\n# ⚠️ 最高优先级指令\n用户明确要求只撰写特定子问题的论文。你必须严格遵守：只撰写该子问题的论文，不要涉及其他子问题！\n\n# ⚠️ 防重复指令\n禁止在论文中重复输出相同的段落！每段内容只写一次，不要大段重复！如果发现自己陷入重复，立即切换到下一个章节。"
-
-        # 搜索相关参考文献（基于题目内容动态生成搜索词）
-        references = ""
-        try:
-            # 从建模报告中提取关键主题词（取前100个字符中的关键词）
-            topic_keywords = []
-            report_lower = modeling_report.lower()
-            for kw in ["优化", "预测", "分类", "聚类", "评价", "调度", "路径", "规划",
-                        "optimization", "prediction", "classification", "clustering",
-                        "scheduling", "routing", "planning", "仿真", "simulation",
-                        "无人机", "车辆", "信号", "图像", "网络", "资源", "调度",
-                        "uav", "drone", "vehicle", "signal", "image", "network"]:
-                if kw in report_lower:
-                    topic_keywords.append(kw)
-            if not topic_keywords:
-                topic_keywords = ["数学建模", "优化"]
-            search_query = "数学建模 " + " ".join(topic_keywords[:5])
-            search_func = self.paper_search.search_tool
-            search_results = search_func.invoke({
-                "query": search_query,
-                "limit": 5
-            })
-            if search_results:
-                references = "\n\n## 搜索到的参考文献\n\n" + str(search_results)[:2000]
-        except Exception:
-            pass
+        references = self._search_references(modeling_report)
 
         user_msg = f"""W1已通过，请撰写完整论文（W2阶段）：
 
@@ -268,7 +313,7 @@ class WritingAgent(BaseAgent):
         messages: List[BaseMessage],
         project_root: str,
     ) -> str:
-        prompt = self.load_system_prompt().replace("{project_root}", project_root)
+        prompt = self.get_cached_prompt().replace("{project_root}", project_root)
         user_msg = f"""质检反馈了以下问题，请修正论文：
 
 ## 反馈

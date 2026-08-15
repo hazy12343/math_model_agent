@@ -31,6 +31,50 @@ class CodingAgent(BaseAgent):
         if common_patterns:
             parts.append(f"\n\n# 常见模式\n\n{common_patterns}")
 
+        # ====== 加载算法资产（关键！） ======
+        algo_index = self._load_algorithm_index()
+        if algo_index:
+            parts.append(f"\n\n# 算法索引（编写代码前必须查阅）\n\n{algo_index}")
+
+        # 加载优化算法详细说明（最常用）
+        optimization_algo = self._load_algorithm("01-优化算法说明.md")
+        if optimization_algo:
+            parts.append(f"\n\n# 优化算法详细说明\n\n{optimization_algo}")
+
+        # 加载遗传算法说明
+        ga_algo = self._load_algorithm("08-遗传算法说明.md")
+        if ga_algo:
+            parts.append(f"\n\n# 遗传算法说明\n\n{ga_algo}")
+
+        # 加载粒子群优化算法说明
+        pso_algo = self._load_algorithm("09-粒子群优化算法说明.md")
+        if pso_algo:
+            parts.append(f"\n\n# 粒子群优化算法说明\n\n{pso_algo}")
+
+        # 加载模拟退火算法说明
+        sa_algo = self._load_algorithm("10-模拟退火算法说明.md")
+        if sa_algo:
+            parts.append(f"\n\n# 模拟退火算法说明\n\n{sa_algo}")
+
+        # 提示：如需要其他算法类型，用 read_text 工具读取 assets/ 下的对应文件
+        skill_root_str = str(self.config.skill_root).replace("\\", "/")
+        parts.append(f"""
+\n\n# ⚠️ 算法查阅规则（P0 级！必须遵守）
+- **编写代码前，必须先查阅上方"算法索引"和对应的算法详细说明**
+- 上方已预加载了优化、遗传算法、粒子群、模拟退火的完整说明
+- 如果问题类型不是优化类（如预测、评价、图论等），请使用 `read_text` 工具读取对应的算法文件：
+  - 预测类：`{skill_root_str}/assets/02-预测类算法说明.md`
+  - 评价类：`{skill_root_str}/assets/03-评价类算法说明.md`
+  - 图论类：`{skill_root_str}/assets/04-图论与网络分析算法说明.md`
+  - 统计类：`{skill_root_str}/assets/05-统计分析与数据处理算法说明.md`
+  - 综合类：`{skill_root_str}/assets/06-综合类算法说明.md`
+  - 机器学习：`{skill_root_str}/assets/07-机器学习算法说明.md`
+  - 假设检验：`{skill_root_str}/assets/11-假设检验说明.md`
+  - 回归分析：`{skill_root_str}/assets/12-回归分析说明.md`
+- **禁止凭记忆写算法代码！** 必须先查阅上方算法说明中的代码模板和参数建议
+- 算法说明中包含了完整的代码模板、参数推荐、可视化方法和参考文献，直接参考使用
+""")
+
         figure_category_count = self.config.min_figure_count // 3
         parts.append(f"""
 \n\n# 当前任务配置
@@ -99,6 +143,252 @@ class CodingAgent(BaseAgent):
 - 图表必须使用出版级样式
 - 代码必须可复现
 - **禁止大段重复注释！** 每段注释只写一次，不要复制粘贴相同的注释块！
+
+# 代码结构硬性要求（违反将被预执行扫描阻断！）
+## 嵌套循环深度限制：优化循环最多3层嵌套
+- 允许: for entity in range(N): for param in range(D): evaluate() (2层)
+- 禁止: 5层及以上（会被阻断）
+### 避免深层嵌套的方法
+1. 向量化计算: I, J, K = np.meshgrid(range(N), range(M), range(K))
+2. itertools.product()展平: for i, j, k in product(range(N), range(M), range(K)) (合并多个循环)
+3. 函数分解: def 处理实体(id): ... ; results = [处理实体(i) for i in range(N)]
+
+## 坐标下降维度限制：最多优化30个关键参数
+## 高维问题(>20参数)强制策略
+1. 逐实体分解优化（推荐）：外层遍历实体，每次DE只优化低维空间(4-6维)
+2. 随机采样+局部优化：先随机生成50个解，取前10个局部优化
+
+## 代码自检清单
+- [ ] 循环嵌套<=3层, 坐标下降<=30维, DE popsize<=10且maxiter<=30
+- [ ] PSO n_particles<=20且max_iter<=50, 总评估次数<=500
+- [ ] 目标函数用比例惩罚(禁止return固定值如1e6), 时间步长DT>=0.2
+
+## 实际案例参考(已验证通过扫描)
+### 案例1: 逐导弹分解优化 - 外层遍历实体,每次DE只优化4维,安全!
+### 案例2: itertools.product()展平 - 合并3个循环为1个迭代器,实际只有2层嵌套
+### 案例3: 敏感性分析/蒙特卡洛 - 函数名含sensitivity关键词,自动豁免
+
+## 🔴🔴🔴 几何可行性分析（物理问题强制第一步！）🔴🔴🔴
+
+### ⚠️ 警告：不执行此步骤将导致结果全为0或NaN！
+
+**识别标准**（满足任一即必须执行）：
+- 题目涉及运动物体（无人机/导弹/车辆/机器人）
+- 有初始位置和速度限制
+- 有时间约束（必须在T秒内完成）
+- 需要优化投放点/拦截点/相遇点
+
+### ❌ 常见致命错误（会导致P2失败！）
+
+**错误1：直接在目标位置构造解**
+```python
+# 错误代码 - 会导致所有解为None!
+burst_pos = TARGET_REAL  # 例如 [0, 200, 0]
+plan = make_bomb(burst_pos, t, uav)
+# 结果: plan = None (因为距离太远无法到达)
+```
+
+**错误2：不检查速度约束**
+```python
+v = distance / time
+# 如果 v > V_MAX 或 v < V_MIN → 解不可行!
+```
+
+**错误3：从全零解开始优化**
+```python
+# 如果贪心构造返回空列表 → 初始解=0 → 优化结果还是0!
+```
+
+### ✅ 正确流程（必须按顺序执行！）
+
+#### Step 1: 计算每个运动实体的可达区域
+```python
+def calc_reachable_region(init_pos, v_min, v_max, t_max):
+    # 计算实体在时间t_max内能到达的环形区域
+    r_min = v_min * t_max  # 最小到达距离
+    r_max = v_max * t_max  # 最大到达距离
+
+    def can_reach(target_pos):
+        dist = np.linalg.norm(target_pos - init_pos)
+        return r_min <= dist <= r_max
+
+    return dict(
+        center=init_pos,
+        r_min=r_min,
+        r_max=r_max,
+        can_reach=can_reach
+    )
+
+# 示例：计算所有无人机的可达区域
+uav_regions = dict()
+for uav_name in UAV_NAMES:
+    uav_regions[uav_name] = calc_reachable_region(
+        UAV_INIT[uav_name], V_UAV_MIN, V_UAV_MAX, T_MAX
+    )
+    # 打印诊断信息
+    region = uav_regions[uav_name]
+    target_dist = np.linalg.norm(TARGET_REAL - UAV_INIT[uav_name])
+    print(# f-string示例: {{uav_name}}: 可达范围 [{{region['r_min']:.0f}}, {{region['r_max']:.0f}}]m, "
+          f"到目标距离 {{target_dist:.0f}}m, "
+          f"状态: {{'可达' if region['can_reach'](TARGET_REAL) else '不可达'}}")
+```
+**预期输出示例**：
+```
+FY1: 可达范围 [4900, 9800]m, 到目标距离 17801m, ❌ 不可达!
+FY2: 可达范围 [4900, 9800]m, 到目标距离 12138m, ❌ 不可达!
+FY3: 可达范围 [4900, 9800]m, 到目标距离 3066m, ✅ 可达!
+...
+```
+
+#### Step 2: 如果目标不可达，寻找拦截点
+```python
+def find_interception_points(missile_name, uav_region, t_range, n_samples=50):
+    # 在导弹轨迹上寻找无人机可达的拦截点
+    points = []
+
+    for t in np.linspace(t_range[0], t_range[1], n_samples):
+        # 计算导弹在时刻t的位置
+        m_pos = get_missile_position(missile_name, t)
+
+        # 检查该点是否在无人机可达范围内
+        if uav_region['can_reach'](m_pos):
+            points.append(dict(
+                time=t,
+                position=m_pos,
+                missile=missile_name
+            ))
+
+    return points
+
+# 为每对(导弹,无人机)寻找拦截点
+interception_map = dict()  # 存储每对(导弹,无人机)的拦截点列表
+
+for missile in MISSILE_NAMES:
+    interception_map[missile] = dict()
+    for uav in UAV_NAMES:
+        points = find_interception_points(
+            missile, uav_regions[uav],
+            t_range=(10, T_MAX-10),  # 避开边界
+            n_samples=100
+        )
+        interception_map[missile][uav] = points
+
+        if len(points) > 0:
+            print(# f-string示例: {{missile}}-{{uav}}: 找到 {{len(points)}} 个拦截点")
+        else:
+            print(# f-string示例: {{missile}}-{{uav}}: ⚠️ 无可用拦截点!")
+```
+
+#### Step 3: 从拦截点生成可行初始解
+```python
+def generate_feasible_solution(interception_map, max_bombs_per_uav=3):
+    # 基于拦截点生成可行的初始投放策略
+    solution = []
+    uav_usage = dict((u, 0) for u in UAV_NAMES)
+
+    # 优先选择时间窗口较好的拦截点
+    for missile in MISSILE_NAMES:
+        best_points = []
+        for uav in UAV_NAMES:
+            if uav_usage[uav] >= max_bombs_per_uav:
+                continue
+            points = interception_map[missile][uav]
+            if len(points) > 0:
+                # 选择中间时间点的拦截（更稳定）
+                mid_idx = len(points) // 2
+                best_points.append((points[mid_idx], uav))
+
+        if len(best_points) > 0:
+            # 选择距离最优的点
+            point, uav = best_points[0]  # 简单策略：取第一个
+
+            # 反推无人机参数
+            bomb_params = calc_uav_params_for_interception(
+                UAV_INIT[uav], point['position'], point['time']
+            )
+
+            if bomb_params is not None:
+                solution.append(dict(
+                    uav=uav,
+                    missile=missile,
+                    theta=bomb_params['theta'],
+                    v=bomb_params['v'],
+                    t_drop=bomb_params['t_drop'],
+                    t_burst=point['time'],
+                    interception_point=point['position']
+                ))
+                uav_usage[uav] += 1
+                print(# f-string示例: ✓ 添加弹: {{uav}} -> {{missile}}, t={{point['time']:.1f}}s")
+
+    return solution
+
+# 生成初始解
+initial_solution = generate_feasible_solution(interception_map)
+
+if len(initial_solution) == 0:
+    print("❌ 错误: 无法生成任何可行解! 检查几何约束是否过严")
+    # 兜底：使用宽松的随机采样
+    initial_solution = fallback_random_sampling()
+else:
+    print(# f-string示例: \n成功生成 {{len(initial_solution)}} 枚可行弹的初始解")
+```
+
+#### Step 4: 两阶段优化（在可行解基础上精细优化）
+```python
+def two_phase_optimization(initial_sol):
+    # Phase 1: 局部微调 -> Phase 2: 全局精优
+
+    # Phase 1: 在每个初始解附近网格搜索
+    refined_solutions = []
+    for bomb in initial_sol:
+        # 创建紧凑的搜索边界（围绕初始解±10%）
+        bounds = [
+            (bomb['theta'] - 0.1, bomb['theta'] + 0.1),
+            (bomb['v'] * 0.9, bomb['v'] * 1.1),
+            (bomb['t_drop'] - 1, bomb['t_drop'] + 1),
+            (bomb['t_burst'] - 1, bomb['t_burst'] + 1)
+        ]
+
+        # 小规模DE优化
+        result = differential_evolution(
+            lambda x: -evaluate_single_bomb(x, bomb),
+            bounds,
+            maxiter=10,
+            popsize=5,
+            seed=42
+        )
+        refined_bomb = decode_to_bomb(result.x, bomb)
+        refined_solutions.append(refined_bomb)
+
+    # Phase 2: 协调优化（可选）
+    final_result = coordinate_descent_refinement(refined_solutions)
+
+    return final_result
+```
+
+### 📊 必须输出的诊断信息
+```python
+print("="*60)
+print("几何可行性诊断报告")
+print("="*60)
+for uav in UAV_NAMES:
+    region = uav_regions[uav]
+    print(# f-string示例: \n{{uav}}:")
+    print(# f-string示例:   初始位置: {{UAV_INIT[uav]}}")
+    print(# f-string示例:   可达距离: [{{region['r_min']:.0f}}, {{region['r_max']:.0f}}]m")
+    print(# f-string示例:   目标距离: {{np.linalg.norm(TARGET_REAL-UAV_INIT[uav]):.0f}}m")
+    print(# f-string示例:   状态: {{'可达' if region['can_reach'](TARGET_REAL) else '不可达'}}")
+
+print(# f-string示例: \n初始解质量: {{len(initial_solution)}} 枚可行弹")
+print(# f-string示例: 初始遮蔽时间: {{evaluate_strategy(decode_solution(initial_solution)):.2f}}s")
+```
+
+### ✅ 验证清单（提交前必须确认）
+- [ ] 已输出每个实体的可达区域诊断信息
+- [ ] 已检测并处理了不可达情况
+- [ ] 初始解包含至少5枚以上的可行弹
+- [ ] 初始遮蔽时间 > 0（不为全零）
+- [ ] 优化算法从非零初始解开始
 
 # 可用的第三方库（已确认安装，可直接 import）
 运行时环境中已安装以下第三方库，你可以直接 import 使用：
@@ -366,21 +656,25 @@ class CodingAgent(BaseAgent):
 - 输出对比结果表
 
 # 国赛级结果质量要求（关键！不满足将导致 P2 自动 FAIL）
-- **结果质量阈值**：优化结果必须 ≥ 理论最大值的 10%（国赛基本要求），争取 ≥ 20%（冲击国一）
-  - 如果首次运行结果 < 10%，必须自动触发以下优化：
+- **结果质量阈值**：优化结果必须 ≥ 理论最大值的 15%（国赛基本要求），争取 ≥ 30%（冲击国一）
+  - 如果首次运行结果 < 15%，必须自动触发以下优化：
     1. 缩小搜索空间（基于物理约束去掉不可行区域）
     2. 增加搜索精度（步长缩小 5-10 倍）
     3. 尝试不同的算法组合
-  - 如果 3 种算法结果都 < 10%，说明模型设计或搜索策略有根本性问题，需要重新分析
+  - 如果 3 种算法结果都 < 15%，说明模型设计或搜索策略有根本性问题，需要重新分析
 - **多目标全覆盖**：如果题目涉及多个目标（如多枚导弹、多个节点、多个任务），必须确保每个目标都有非零结果
   - 不得出现"仅部分目标有结果，其余为零"的情况
   - 每个目标的策略参数应独立优化，而非所有目标共享同一组参数
   - 输出中必须包含每个目标的独立结果统计
-- **蒙特卡洛鲁棒性**：蒙特卡洛验证的均值应 ≥ 最优值的 50%，失败率（零值占比）应 ≤ 30%
-  - 如果鲁棒性不满足要求，说明策略对参数扰动过于敏感，需要：
-    1. 使用更保守的策略参数（如增加安全余量）
-    2. 在目标函数中引入鲁棒性惩罚项
-    3. 使用随机规划或鲁棒优化方法
+- **蒙特卡洛鲁棒性**：蒙特卡洛验证的均值应 ≥ 最优值的 50%，失败率（零值占比）应 ≤ 20%
+  - **这是国赛最关键的分水岭！** 如果 MC 均值远低于最优值（如仅 30%），说明策略是"碰运气"而非"可靠优化"
+  - 提高鲁棒性的核心方法：
+    1. **在目标函数中加入鲁棒性惩罚项**：`penalty_robust = lambda_robust * (max_sensitivity)`，λ_robust 建议取 0.1~0.5
+    2. **使用更保守的策略参数**：在最优解附近选择"平坦区域"（Hessian 矩阵条件数小的区域），而非仅追求峰值
+    3. **引入参数安全余量**：将最优参数向可行域内部收缩 5%~10%，牺牲少量最优值换鲁棒性
+    4. **使用鲁棒优化方法**：如 min-max 优化（worst-case optimization）或机会约束规划
+  - 蒙特卡洛扰动应覆盖所有关键参数（包括物理参数和决策参数），而非仅部分参数
+  - 扰动幅度建议：物理参数 ±5%，决策参数 ±3%，时间参数 ±2%
 
 # 多目标全覆盖策略（国赛关键 — 防止部分目标结果为零）
 - 如果题目涉及多个独立目标（如多个子任务、多个评价对象、多个时间段），必须为每个目标独立执行求解：
@@ -420,7 +714,7 @@ class CodingAgent(BaseAgent):
    # ⚠️ 必须定义 test_params（替换为实际参数），并确保 evaluate 函数已定义
    test_params = [/* 替换为实际测试参数，如初始位置、速度等 */]
    test_total = evaluate(test_params)  # ⚠️ 此行不可省略！必须先赋值再使用
-   print(f"[诊断] 单点测试结果: {{test_total:.2f}}")
+   print(# f-string示例: [诊断] 单点测试结果: {{test_total:.2f}}")
    if test_total < 1e-6:
        print("[诊断] 警告：evaluate() 返回零！模型实现可能有误，请检查：")
        print("  1. 核心实体是否在目标影响范围内？")
@@ -442,10 +736,28 @@ class CodingAgent(BaseAgent):
 - 即使几何模型返回零，也要生成完整的图表（场景图、轨迹图等）和算法对比输出，作为工作量证明
 - 修复几何模型是下一轮迭代的任务，本轮代码应尽可能产出完整的输出
 
+# 🔴 全局优化算法使用指南（国赛关键 — 差分进化/PSO 必须使用！）
+- **差分进化（differential_evolution）是最推荐的全局优化算法**，原因：
+  1. 不需要梯度信息，适用于非光滑、非凸目标函数
+  2. 自带种群多样性维护，不易陷入局部最优
+  3. 可处理带约束优化（通过惩罚函数法）
+  4. scipy 内置实现，无需额外安装
+- **差分进化必须作为 3 种对比算法之一**（除非问题类型不适用）
+- 自适应参数策略（根据搜索空间维度 D 调整）：
+  - D ≤ 5: popsize=10, maxiter=30, tol=0.01
+  - 5 < D ≤ 10: popsize=10, maxiter=25, tol=0.01
+  - 10 < D ≤ 20: popsize=8, maxiter=20, tol=0.01
+  - D > 20: 必须使用逐实体分解优化（外层 for 循环，内层 DE 每次 ≤ 6 维）
+- **差分进化必须在目标函数外做约束处理**，不可在目标函数内部 return 固定值
+- **差分进化结果验证**：必须检查 DE 返回的 success 标志和 fun 值
+  - 如果 DE 返回 success=False 或 fun 接近 0，说明 DE 未找到有效解，必须在输出中标注
+  - 如果 DE 和另一算法（如随机搜索）结果差异巨大，优先信任非零结果
+
 # 收敛性分析要求（国赛关键）
 - 对于迭代类算法（如坐标下降、梯度下降、遗传算法），必须输出收敛曲线
 - 代码中自动判断是否收敛：连续 N 代改进量 < ε
 - 输出收敛状态：已收敛 / 未收敛（达到最大迭代次数）
+- **收敛曲线必须来自真实迭代记录**（在循环中每次 iter 记录 best_value），禁止合成直线
 
 # 蒙特卡洛验证要求（国赛关键）
 - 对最优解进行蒙特卡洛模拟验证：
@@ -537,16 +849,24 @@ if test_result <= 0:
 **比例惩罚的关键**：惩罚项必须 `∝` 违反程度。违反越严重，惩罚越大，
 这样才能在不可行区域中形成指向可行域的梯度。
 
-# 资源充分利用（国赛关键）
-- 必须使用全部可用资源（如题目给定的所有设备、所有时间窗口、所有容量上限）
+# 资源充分利用（国赛关键 — P0 级！）
+- **必须使用全部可用资源**（如题目给定的所有设备、所有时间窗口、所有容量上限）
 - 如果建模报告指定了资源上限，必须用满或给出未用满的合理理由
 - **资源分配必须覆盖所有资源节点**：如果问题中有 N 个可用资源节点，
   必须确保每个节点都分配到至少一项任务，不得将所有任务集中到单一节点。
-  - 错误示例：5 个可用节点，3 个任务全部分配给节点 A → 其他 4 个节点闲置
-  - 正确示例：5 个可用节点，3 个任务分配给节点 A/B/C → 充分利用资源
+  - 错误示例：5 架无人机可用，只有 3 架被使用，FY1 和 FY4 完全闲置 → **P0 级错误！**
+  - 正确示例：5 架无人机全部参与任务分配，每架至少 1 枚弹
   - 实现方法：在分配算法中引入多样性约束（如每个节点至少分配 floor(N_tasks/N_nodes) 个任务）
+- **资源利用率自检**：代码输出中必须包含每个资源节点的使用统计，格式如下：
+  ```
+  print("资源利用率:")
+  for name in NODES:
+      print(f"  {{name}}: {{used}}/{{capacity}}")
+  print(f"  总利用率: {{sum(used)/sum(capacity)*100:.0f}}%")
+  ```
+- 如果某资源节点确实无法使用（如物理上不可达），必须在输出中明确说明原因
 - 多资源协同策略：同一平台的多个资源应形成连续或互补的使用窗口
-- 输出中必须包含资源利用率统计
+- **资源利用率 < 100% 且无合理解释 → P2 自动降级**
 
 # 中文显示要求（P2 阶段关键，P1 阶段由系统自动注入）
 - **所有图表的标题、轴标签、图例、注释必须使用中文**
@@ -793,7 +1113,7 @@ matplotlib.rcParams['svg.fonttype'] = 'none'
 # [诊断] 单点测试：手动构造一组合理参数，确认核心计算函数能否返回非零值
 test_params = [合理的默认值, ...]  # 根据问题替换为实际参数
 test_result = evaluate(test_params)  # 根据问题替换为实际函数名
-print(f"[诊断] 单点测试: {{test_result:.4f}}")
+print(# f-string示例: [诊断] 单点测试: {{test_result:.4f}}")
 if test_result <= 0 or np.isnan(test_result):
     print("[诊断] 警告：核心计算模型返回零值/NaN！请检查数据/公式/判定条件")
     # 如果诊断失败，不要继续优化，先修复核心计算模型
@@ -934,7 +1254,7 @@ result = differential_evolution(objective, bounds, maxiter=20, popsize=8, seed=4
 # [诊断] 单点测试：手动构造一组合理参数，确认核心计算函数能否返回非零值
 test_params = [合理的默认值, ...]  # 根据问题替换为实际参数
 test_result = evaluate(test_params)  # 根据问题替换为实际函数名
-print(f"[诊断] 单点测试: {{test_result:.4f}}")
+print(# f-string示例: [诊断] 单点测试: {{test_result:.4f}}")
 if test_result <= 0 or np.isnan(test_result):
     print("[诊断] 警告：核心计算模型返回零值/NaN！请检查：")
     print("  1. 输入数据是否正确加载（路径、列名、单位）")

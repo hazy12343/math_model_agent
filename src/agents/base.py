@@ -20,6 +20,7 @@ class BaseAgent:
         self._llm: Optional[ChatOpenAI] = None
         self._fix_llm: Optional[ChatOpenAI] = None
         self._system_prompt: Optional[str] = None
+        self._cached_prompt: Optional[str] = None
 
     @property
     def llm(self) -> ChatOpenAI:
@@ -52,6 +53,11 @@ class BaseAgent:
     def load_system_prompt(self) -> str:
         raise NotImplementedError
 
+    def get_cached_prompt(self) -> str:
+        if self._cached_prompt is None:
+            self._cached_prompt = self.load_system_prompt()
+        return self._cached_prompt
+
     def get_tools(self) -> List[BaseTool]:
         return []
 
@@ -66,7 +72,7 @@ class BaseAgent:
         if system_prompt is not None:
             self._system_prompt = system_prompt
         elif self._system_prompt is None:
-            self._system_prompt = self.load_system_prompt()
+            self._system_prompt = self.get_cached_prompt()
 
         full_messages = [SystemMessage(content=self._system_prompt)]
         full_messages.extend(messages)
@@ -161,3 +167,6 @@ class BaseAgent:
 
     def _load_algorithm(self, algo_name: str) -> str:
         return self.skill_loader.load_algorithm(algo_name)
+
+    def _load_algorithm_index(self) -> str:
+        return self.skill_loader.load_algorithm_index()
